@@ -75,7 +75,8 @@ public class TestFeaturesConfig
                 .setForceSingleNodeOutput(true)
                 .setPagesIndexEagerCompactionEnabled(false)
                 .setFilterAndProjectMinOutputPageSize(new DataSize(25, KILOBYTE))
-                .setFilterAndProjectMinOutputPageRowCount(256));
+                .setFilterAndProjectMinOutputPageRowCount(256)
+                .setDynamicPartitionPruningEnabled(false));
     }
 
     @Test
@@ -121,6 +122,7 @@ public class TestFeaturesConfig
                 .put("pages-index.eager-compaction-enabled", "true")
                 .put("experimental.filter-and-project-min-output-page-size", "1MB")
                 .put("experimental.filter-and-project-min-output-page-row-count", "2048")
+                .put("experimental.dynamic-partition-pruning-enabled", "true")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -162,7 +164,8 @@ public class TestFeaturesConfig
                 .setForceSingleNodeOutput(false)
                 .setPagesIndexEagerCompactionEnabled(true)
                 .setFilterAndProjectMinOutputPageSize(new DataSize(1, MEGABYTE))
-                .setFilterAndProjectMinOutputPageRowCount(2048);
+                .setFilterAndProjectMinOutputPageRowCount(2048)
+                .setDynamicPartitionPruningEnabled(true);
 
         assertFullMapping(properties, expected);
     }
