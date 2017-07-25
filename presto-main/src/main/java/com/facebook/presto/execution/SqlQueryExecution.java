@@ -30,6 +30,7 @@ import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.operator.ForScheduler;
 import com.facebook.presto.security.AccessControl;
+import com.facebook.presto.server.DynamicFilterService;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.resourceGroups.QueryType;
@@ -140,6 +141,7 @@ public final class SqlQueryExecution
     private final ExecutionPolicy executionPolicy;
     private final List<Expression> parameters;
     private final SplitSchedulerStats schedulerStats;
+    private final DynamicFilterService dynamicFilterService;
 
     public SqlQueryExecution(QueryId queryId,
             String query,
@@ -166,7 +168,8 @@ public final class SqlQueryExecution
             PlanFlattener planFlattener,
             ExecutionPolicy executionPolicy,
             List<Expression> parameters,
-            SplitSchedulerStats schedulerStats)
+            SplitSchedulerStats schedulerStats,
+            DynamicFilterService dynamicFilterService)
     {
         try (SetThreadName ignored = new SetThreadName("Query-%s", queryId)) {
             this.statement = requireNonNull(statement, "statement is null");
@@ -188,6 +191,7 @@ public final class SqlQueryExecution
             this.planFlattener = requireNonNull(planFlattener, "planFlattener is null");
             this.parameters = requireNonNull(parameters);
             this.schedulerStats = requireNonNull(schedulerStats, "schedulerStats is null");
+            this.dynamicFilterService = requireNonNull(dynamicFilterService, "dynamicFilterService is null");
 
             checkArgument(scheduleSplitBatchSize > 0, "scheduleSplitBatchSize must be greater than 0");
             this.scheduleSplitBatchSize = scheduleSplitBatchSize;
@@ -450,7 +454,8 @@ public final class SqlQueryExecution
                 rootOutputBuffers,
                 nodeTaskMap,
                 executionPolicy,
-                schedulerStats);
+                schedulerStats,
+                dynamicFilterService);
 
         queryScheduler.set(scheduler);
 
@@ -644,6 +649,7 @@ public final class SqlQueryExecution
         private final FailureDetector failureDetector;
         private final NodeTaskMap nodeTaskMap;
         private final Map<String, ExecutionPolicy> executionPolicies;
+        private final DynamicFilterService dynamicFilterService;
 
         @Inject
         SqlQueryExecutionFactory(QueryManagerConfig config,
@@ -666,7 +672,8 @@ public final class SqlQueryExecution
                 QueryExplainer queryExplainer,
                 PlanFlattener planFlattener,
                 Map<String, ExecutionPolicy> executionPolicies,
-                SplitSchedulerStats schedulerStats)
+                SplitSchedulerStats schedulerStats,
+                DynamicFilterService dynamicFilterService)
         {
             requireNonNull(config, "config is null");
             this.schedulerStats = requireNonNull(schedulerStats, "schedulerStats is null");
@@ -692,6 +699,7 @@ public final class SqlQueryExecution
             this.executionPolicies = requireNonNull(executionPolicies, "schedulerPolicies is null");
             this.costCalculator = requireNonNull(costCalculator, "cost calculator is null");
             this.planOptimizers = planOptimizers.get();
+            this.dynamicFilterService = requireNonNull(dynamicFilterService, "dynamicFilterService is null");
         }
 
         @Override
@@ -727,7 +735,8 @@ public final class SqlQueryExecution
                     planFlattener,
                     executionPolicy,
                     parameters,
-                    schedulerStats);
+                    schedulerStats,
+                    dynamicFilterService);
         }
     }
 }
