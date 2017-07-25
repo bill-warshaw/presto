@@ -678,7 +678,8 @@ public class LocalQueryRunner
             SplitSource splitSource = splitManager.getSplits(
                     session,
                     layout,
-                    pipelineExecutionStrategy == GROUPED_EXECUTION ? GROUPED_SCHEDULING : UNGROUPED_SCHEDULING);
+                    pipelineExecutionStrategy == GROUPED_EXECUTION ? GROUPED_SCHEDULING : UNGROUPED_SCHEDULING,
+                    ImmutableList.of());
 
             ImmutableSet.Builder<ScheduledSplit> scheduledSplits = ImmutableSet.builder();
             while (!splitSource.isFinished()) {
@@ -889,7 +890,7 @@ public class LocalQueryRunner
 
     private Split getLocalQuerySplit(Session session, TableLayoutHandle handle)
     {
-        SplitSource splitSource = splitManager.getSplits(session, handle, UNGROUPED_SCHEDULING);
+        SplitSource splitSource = splitManager.getSplits(session, handle, UNGROUPED_SCHEDULING, ImmutableList.of());
         List<Split> splits = new ArrayList<>();
         splits.addAll(getFutureValue(splitSource.getNextBatch(1000)));
         while (!splitSource.isFinished()) {
