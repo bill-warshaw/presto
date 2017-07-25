@@ -18,11 +18,13 @@ import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
+import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
 import java.util.List;
@@ -57,7 +59,10 @@ public class TestHiveSplitSource
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
-                new CounterStat());
+                new CounterStat(),
+                ImmutableList.of(),
+                DateTimeZone.UTC,
+                new TypeRegistry());
 
         // add 10 splits
         for (int i = 0; i < 10; i++) {
@@ -92,7 +97,10 @@ public class TestHiveSplitSource
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
-                new CounterStat());
+                new CounterStat(),
+                ImmutableList.of(),
+                DateTimeZone.UTC,
+                new TypeRegistry());
 
         // add some splits
         for (int i = 0; i < 5; i++) {
@@ -150,7 +158,10 @@ public class TestHiveSplitSource
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
-                new CounterStat());
+                new CounterStat(),
+                ImmutableList.of(),
+                DateTimeZone.UTC,
+                new TypeRegistry());
 
         final SettableFuture<ConnectorSplit> splits = SettableFuture.create();
 
@@ -210,7 +221,10 @@ public class TestHiveSplitSource
                 maxOutstandingSplitsSize,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
-                new CounterStat());
+                new CounterStat(),
+                ImmutableList.of(),
+                DateTimeZone.UTC,
+                new TypeRegistry());
         InternalHiveSplit testSplit = new InternalHiveSplit(
                 "partition-name",
                 "path",
