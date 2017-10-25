@@ -41,7 +41,6 @@ import org.joda.time.DateTimeZone;
 import java.io.FileNotFoundException;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -51,6 +50,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -491,7 +491,6 @@ class HiveSplitSource
                     }
                     if (predicateDomain.overlaps(Domain.singleValue(type, objectToWrite))) {
                         result.add(new HiveSplit(
-                                hiveSplit.getClientId(),
                                 hiveSplit.getDatabase(),
                                 hiveSplit.getTable(),
                                 hiveSplit.getPartitionName(),
@@ -544,7 +543,7 @@ class HiveSplitSource
     {
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
-            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture);
+            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, 1000, TimeUnit.MILLISECONDS);
             description.ifPresent(dynamicFilterDescriptionBuilder::add);
         }
         return dynamicFilterDescriptionBuilder.build();

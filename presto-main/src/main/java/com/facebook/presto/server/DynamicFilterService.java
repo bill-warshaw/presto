@@ -79,7 +79,7 @@ public class DynamicFilterService
             futures.put(SourceDescriptor.of(queryId, source), future);
         }
         DynamicFilterSummaryWithSenders dynamicFilterSummaryWithSenders = dynamicFilterSummaries.get(SourceDescriptor.of(queryId, source));
-        if (dynamicFilterSummaryWithSenders.getSummaryIfReady().isPresent()) {
+        if (dynamicFilterSummaryWithSenders != null && dynamicFilterSummaryWithSenders.getSummaryIfReady().isPresent()) {
             future.set(dynamicFilterSummaryWithSenders.getSummaryIfReady().get());
         }
         return future;
