@@ -20,8 +20,10 @@ import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.HttpUriBuilder;
 import io.airlift.http.client.StatusResponseHandler.StatusResponse;
 import io.airlift.json.JsonCodec;
+import io.airlift.log.Logger;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static com.google.common.net.MediaType.JSON_UTF_8;
@@ -36,6 +38,7 @@ import static java.util.Objects.requireNonNull;
 public class HttpDynamicFilterClient
         implements DynamicFilterClient
 {
+    private static final Logger log = Logger.get(HttpDynamicFilterClient.class);
     private final JsonCodec<DynamicFilterSummary> summaryJsonCodec;
     private final URI coordinatorURI;
     private final HttpClient httpClient;
@@ -47,12 +50,28 @@ public class HttpDynamicFilterClient
     public HttpDynamicFilterClient(JsonCodec<DynamicFilterSummary> summaryJsonCodec, URI coordinatorURI, HttpClient httpClient, TaskId taskId, String source, int driverId, int expectedDriversCount)
     {
         this.summaryJsonCodec = requireNonNull(summaryJsonCodec, "summaryJsonCodec is null");
-        this.coordinatorURI = requireNonNull(coordinatorURI, "coordinatorURI is null");
+        this.coordinatorURI = requireNonNull(getCoordinatorURI(coordinatorURI), "coordinatorURI obtained is null");
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
         this.taskId = requireNonNull(taskId, "taskId is null");
         this.source = requireNonNull(source, "source is null");
         this.driverId = driverId;
         this.expectedDriversCount = expectedDriversCount;
+    }
+
+    public URI getCoordinatorURI(URI discoveryURI)
+    {
+        try {
+            return (discoveryURI == null) ? null : new URI(discoveryURI.getScheme(),
+                discoveryURI.getUserInfo(),
+                discoveryURI.getHost(), 8081,
+                discoveryURI.getPath(),
+                discoveryURI.getQuery(),
+                discoveryURI.getFragment());
+        }
+        catch (URISyntaxException e) {
+          log.warn("Coordinator URL could not be inferred from discover URI" + discoveryURI.toString());
+          return null;
+        }
     }
 
     @Override

@@ -22,6 +22,7 @@ import com.facebook.presto.spi.type.TypeUtils;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import java.util.List;
 

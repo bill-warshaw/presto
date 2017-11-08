@@ -14,6 +14,7 @@
 package com.facebook.presto.server;
 
 import com.facebook.presto.operator.DynamicFilterSummary;
+import io.airlift.log.Logger;
 
 import javax.inject.Inject;
 import javax.ws.rs.Consumes;
@@ -42,6 +43,8 @@ public class DynamicFilterResource
         this.service = service;
     }
 
+    private static final Logger log = Logger.get(DynamicFilterResource.class);
+
     @PUT
     @Path("/{stageId}/{taskId}/{driverId}/{expectedCount}")
     @Consumes(APPLICATION_JSON)
@@ -55,6 +58,7 @@ public class DynamicFilterResource
             @PathParam("expectedCount") int expectedCount,
             DynamicFilterSummary dynamicFilterSummary)
     {
+        log.info("DynamicSummary:  Query id: " + queryId + "task id: " + taskId);
         service.storeOrMergeSummary(queryId, source, stageId, taskId, driverId, dynamicFilterSummary, expectedCount);
         return Response.ok().build();
     }

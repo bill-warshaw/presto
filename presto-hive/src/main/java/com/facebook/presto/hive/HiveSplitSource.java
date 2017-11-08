@@ -458,7 +458,7 @@ class HiveSplitSource
         TupleDomain<HiveColumnHandle> runtimeTupleDomain = dynamicFilterDescriptions.stream()
                 .map(DynamicFilterDescription::getTupleDomain)
                 .map(domain -> domain.transform(HiveColumnHandle.class::cast))
-                .reduce(TupleDomain.all(), TupleDomain::columnWiseUnion);
+                .reduce(TupleDomain.none(), TupleDomain::columnWiseUnion);
 
         Optional<Map<HiveColumnHandle, Domain>> domains = runtimeTupleDomain.getDomains();
         if (!domains.isPresent() || domains.get().size() == 0) {
@@ -470,25 +470,27 @@ class HiveSplitSource
         ImmutableList.Builder<ConnectorSplit> result = ImmutableList.builder();
         for (ConnectorSplit split : splits) {
             HiveSplit hiveSplit = (HiveSplit) split;
-            for (HivePartitionKey partitionKey : hiveSplit.getPartitionKeys()) {
+            List<HivePartitionKey> partitionKeys = hiveSplit.getPartitionKeys();
+            boolean addOriginalSplit = true;
+            for (HivePartitionKey partitionKey : partitionKeys) {
                 String partitionKeyName = partitionKey.getName().toLowerCase(Locale.ENGLISH);
                 Collection<Domain> relevantDomains = domainsCache.getDomains(partitionKeyName);
+                Type type = partitionKey.getHiveType().getType(typeManager);
+                Object objectToWrite;
+                try {
+                    objectToWrite = HiveUtil.parsePartitionValue(partitionKey.getName(), partitionKey.getValue(), type, timeZone).getValue();
+                }
+                catch (PrestoException e) {
+                    // if the type is not supported, skip pruning for that partition
+                    if (e.getErrorCode().equals(NOT_SUPPORTED)) {
+                        log.warn("Type " + type + " is not supported for Dynamic Partition Pruning");
+                        continue;
+                    }
 
+                    throw e;
+                }
                 for (Domain predicateDomain : relevantDomains) {
-                    Type type = partitionKey.getHiveType().getType(typeManager);
-                    Object objectToWrite;
-                    try {
-                        objectToWrite = HiveUtil.parsePartitionValue(partitionKey.getName(), partitionKey.getValue(), type, timeZone).getValue();
-                    }
-                    catch (PrestoException e) {
-                        // if the type is not supported, skip pruning for that partition
-                        if (e.getErrorCode().equals(NOT_SUPPORTED)) {
-                            // TODO: log information about not supported type
-                            continue;
-                        }
-
-                        throw e;
-                    }
+                    addOriginalSplit = false;
                     if (predicateDomain.overlaps(Domain.singleValue(type, objectToWrite))) {
                         result.add(new HiveSplit(
                                 hiveSplit.getDatabase(),
@@ -507,7 +509,14 @@ class HiveSplitSource
                                 hiveSplit.getColumnCoercions()));
                         break;
                     }
+                    else {
+                        log.info("Partition got pruned due to dynamic filters: "
+                            + hiveSplit.getPath() + " for table " + hiveSplit.getDatabase() + "." + hiveSplit.getTable());
+                    }
                 }
+            }
+            if (addOriginalSplit) {
+                result.add(split);
             }
         }
         return result.build();
@@ -543,7 +552,7 @@ class HiveSplitSource
     {
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
-            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, 1000, TimeUnit.MILLISECONDS);
+            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, 5, TimeUnit.SECONDS);
             description.ifPresent(dynamicFilterDescriptionBuilder::add);
         }
         return dynamicFilterDescriptionBuilder.build();
