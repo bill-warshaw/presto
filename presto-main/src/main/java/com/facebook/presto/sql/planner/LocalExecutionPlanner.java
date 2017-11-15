@@ -28,6 +28,7 @@ import com.facebook.presto.operator.AggregationOperator.AggregationOperatorFacto
 import com.facebook.presto.operator.AssignUniqueIdOperator;
 import com.facebook.presto.operator.DeleteOperator.DeleteOperatorFactory;
 import com.facebook.presto.operator.DriverFactory;
+import com.facebook.presto.operator.DynamicFilterAndProjectOperator;
 import com.facebook.presto.operator.DynamicFilterClientSupplier;
 import com.facebook.presto.operator.DynamicFilterSourceOperator.DynamicFilterSourceOperatorFactory;
 import com.facebook.presto.operator.EnforceSingleRowOperator;
@@ -162,6 +163,7 @@ import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.sql.tree.NodeRef;
 import com.facebook.presto.sql.tree.OrderBy;
 import com.facebook.presto.sql.tree.SortItem;
+import com.facebook.presto.util.RowExpressionConverter;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -1163,14 +1165,25 @@ public class LocalExecutionPlanner
                 else {
                     Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
 
-                    OperatorFactory operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
+                    OperatorFactory operatorFactory;
+                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
+                        RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
+                        operatorFactory = new DynamicFilterAndProjectOperator.DynamicFilterAndProjectOperatorFactory(
+                            context.getNextOperatorId(),
+                            planNodeId,
+                            pageProcessor,
+                            getTypes(rewrittenProjections, expressionTypes),
+                            translatedProjections, expressionCompiler, translatedFilter, dynamicFilters.get(), dynamicFilterClientSupplier, planNodeId.toString(), converter);
+                    }
+                    else {
+                        operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
                             context.getNextOperatorId(),
                             planNodeId,
                             pageProcessor,
                             getTypes(rewrittenProjections, expressionTypes),
                             getFilterAndProjectMinOutputPageSize(session),
                             getFilterAndProjectMinOutputPageRowCount(session));
-
+                    }
                     return new PhysicalOperation(operatorFactory, outputMappings, source);
                 }
             }
