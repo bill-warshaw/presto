@@ -52,8 +52,8 @@ public class HttpDynamicFilterClient
         this.summaryJsonCodec = requireNonNull(summaryJsonCodec, "summaryJsonCodec is null");
         this.coordinatorURI = requireNonNull(getCoordinatorURI(coordinatorURI), "coordinatorURI obtained is null");
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
-        this.taskId = requireNonNull(taskId, "taskId is null");
-        this.source = requireNonNull(source, "source is null");
+        this.taskId = taskId;
+        this.source = source;
         this.driverId = driverId;
         this.expectedDriversCount = expectedDriversCount;
     }
@@ -77,6 +77,8 @@ public class HttpDynamicFilterClient
     @Override
     public ListenableFuture<JsonResponse<DynamicFilterSummary>> getSummary()
     {
+        requireNonNull(taskId, "taskId is null");
+        requireNonNull(source, "source is null");
         return httpClient.executeAsync(
                 prepareGet()
                         .setUri(HttpUriBuilder.uriBuilderFrom(coordinatorURI)
@@ -84,6 +86,20 @@ public class HttpDynamicFilterClient
                                 .appendPath("/" + taskId.getQueryId())
                                 .appendPath("/" + source)
                                 .build())
+                        .build(),
+                createFullJsonResponseHandler(jsonCodec(DynamicFilterSummary.class)));
+    }
+
+    @Override
+    public ListenableFuture<JsonResponse<DynamicFilterSummary>> getSummary(String queryId, String source)
+    {
+        return httpClient.executeAsync(
+                prepareGet()
+                        .setUri(HttpUriBuilder.uriBuilderFrom(coordinatorURI)
+                            .appendPath("/v1/dynamic-filter")
+                            .appendPath("/" + queryId)
+                            .appendPath("/" + source)
+                            .build())
                         .build(),
                 createFullJsonResponseHandler(jsonCodec(DynamicFilterSummary.class)));
     }

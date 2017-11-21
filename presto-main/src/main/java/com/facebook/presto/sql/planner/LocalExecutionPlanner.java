@@ -1166,14 +1166,18 @@ public class LocalExecutionPlanner
                     Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
 
                     OperatorFactory operatorFactory;
-                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
+                    //TODO: Currently does not support more than 1 dynamic filter, need to add support for more than 1
+                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && dynamicFilters.get().size() == 1) {
                         RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
+                        DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
                         operatorFactory = new DynamicFilterAndProjectOperator.DynamicFilterAndProjectOperatorFactory(
                             context.getNextOperatorId(),
                             planNodeId,
                             pageProcessor,
                             getTypes(rewrittenProjections, expressionTypes),
-                            translatedProjections, expressionCompiler, translatedFilter, dynamicFilters.get(), dynamicFilterClientSupplier, planNodeId.toString(), converter);
+                            translatedProjections, expressionCompiler, translatedFilter,
+                            dynamicFilter, dynamicFilterClientSupplier,
+                            session.getQueryId(), converter);
                     }
                     else {
                         operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(

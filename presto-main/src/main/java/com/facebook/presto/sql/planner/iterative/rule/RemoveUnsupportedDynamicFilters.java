@@ -22,12 +22,10 @@ import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.SymbolAllocator;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizer;
 import com.facebook.presto.sql.planner.plan.Assignments;
-import com.facebook.presto.sql.planner.plan.FilterNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.PlanNode;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
 import com.facebook.presto.sql.tree.Expression;
 
 import java.util.HashMap;
@@ -115,7 +113,7 @@ public class RemoveUnsupportedDynamicFilters
             return new Assignments(assignmentsMap);
         }
 
-        @Override
+        /*@Override
         public PlanNode visitFilter(FilterNode node, RewriteContext<Set<DynamicFilter>> context)
         {
             FilterNode filter = (FilterNode) context.defaultRewrite(node, context.get());
@@ -136,7 +134,7 @@ public class RemoveUnsupportedDynamicFilters
             }
 
             return new FilterNode(node.getId(), node.getSource(), modified);
-        }
+        }*/
 
         private Expression removeDynamicFilters(Expression expression, Set<DynamicFilter> removedFilters)
         {
