@@ -31,6 +31,7 @@ import com.facebook.presto.operator.DriverFactory;
 import com.facebook.presto.operator.DynamicFilterAndProjectOperator;
 import com.facebook.presto.operator.DynamicFilterClientSupplier;
 import com.facebook.presto.operator.DynamicFilterSourceOperator.DynamicFilterSourceOperatorFactory;
+import com.facebook.presto.operator.DynamicScanFilterAndProjectOperator;
 import com.facebook.presto.operator.EnforceSingleRowOperator;
 import com.facebook.presto.operator.ExchangeClientSupplier;
 import com.facebook.presto.operator.ExchangeOperator.ExchangeOperatorFactory;
@@ -58,6 +59,7 @@ import com.facebook.presto.operator.PartitionedLookupSourceFactory;
 import com.facebook.presto.operator.PartitionedOutputOperator.PartitionedOutputFactory;
 import com.facebook.presto.operator.PipelineExecutionStrategy;
 import com.facebook.presto.operator.RowNumberOperator;
+import com.facebook.presto.operator.ScanFilterAndProjectOperator;
 import com.facebook.presto.operator.ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory;
 import com.facebook.presto.operator.SetBuilderOperator.SetBuilderOperatorFactory;
 import com.facebook.presto.operator.SetBuilderOperator.SetSupplier;
@@ -1147,18 +1149,38 @@ public class LocalExecutionPlanner
                 if (columns != null) {
                     Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(translatedFilter, translatedProjections, sourceNode.getId());
                     Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
-
-                    SourceOperatorFactory operatorFactory = new ScanFilterAndProjectOperatorFactory(
-                            context.getNextOperatorId(),
-                            planNodeId,
-                            sourceNode.getId(),
-                            pageSourceProvider,
-                            cursorProcessor,
-                            pageProcessor,
-                            columns,
-                            getTypes(rewrittenProjections, expressionTypes),
-                            getFilterAndProjectMinOutputPageSize(session),
-                            getFilterAndProjectMinOutputPageRowCount(session));
+                    SourceOperatorFactory operatorFactory;
+                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && dynamicFilters.get().size() == 1) {
+                        RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
+                        DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
+                        operatorFactory = new DynamicScanFilterAndProjectOperator.DynamicScanFilterAndProjectOperatorFactory(
+                                context.getNextOperatorId(),
+                                planNodeId,
+                                sourceNode.getId(),
+                                pageSourceProvider,
+                                cursorProcessor,
+                                pageProcessor,
+                                columns,
+                                getTypes(rewrittenProjections, expressionTypes),
+                                getFilterAndProjectMinOutputPageSize(session),
+                                getFilterAndProjectMinOutputPageRowCount(session),
+                                translatedProjections, expressionCompiler, translatedFilter,
+                                dynamicFilter, dynamicFilterClientSupplier,
+                                session.getQueryId(), converter);
+                    }
+                    else {
+                        operatorFactory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
+                                context.getNextOperatorId(),
+                                planNodeId,
+                                sourceNode.getId(),
+                                pageSourceProvider,
+                                cursorProcessor,
+                                pageProcessor,
+                                columns,
+                                getTypes(rewrittenProjections, expressionTypes),
+                                getFilterAndProjectMinOutputPageSize(session),
+                                getFilterAndProjectMinOutputPageRowCount(session));
+                    }
 
                     return new PhysicalOperation(operatorFactory, outputMappings, groupEnumerable ? GROUPED_EXECUTION : UNGROUPED_EXECUTION);
                 }
@@ -1175,6 +1197,8 @@ public class LocalExecutionPlanner
                             planNodeId,
                             pageProcessor,
                             getTypes(rewrittenProjections, expressionTypes),
+                            getFilterAndProjectMinOutputPageSize(session),
+                            getFilterAndProjectMinOutputPageRowCount(session),
                             translatedProjections, expressionCompiler, translatedFilter,
                             dynamicFilter, dynamicFilterClientSupplier,
                             session.getQueryId(), converter);

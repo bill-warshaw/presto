@@ -231,14 +231,24 @@ public class ScanFilterAndProjectOperator
         }
 
         if (pageSource != null) {
-            return processPageSource();
+            return processPageSource(getPageProcessor());
         }
         else {
-            return processColumnSource();
+            return processColumnSource(getCursorProcessor());
         }
     }
 
-    private Page processColumnSource()
+    protected PageProcessor getPageProcessor()
+    {
+        return this.pageProcessor;
+    }
+
+    protected CursorProcessor getCursorProcessor()
+    {
+        return this.cursorProcessor;
+    }
+
+    protected Page processColumnSource(CursorProcessor cursorProcessor)
     {
         DriverYieldSignal yieldSignal = operatorContext.getDriverContext().getYieldSignal();
         if (!finishing && !yieldSignal.isSet()) {
@@ -266,7 +276,7 @@ public class ScanFilterAndProjectOperator
         return page;
     }
 
-    private Page processPageSource()
+    protected Page processPageSource(PageProcessor pageProcessor)
     {
         DriverYieldSignal yieldSignal = operatorContext.getDriverContext().getYieldSignal();
         if (!finishing && mergingOutput.needsInput() && !yieldSignal.isSet()) {

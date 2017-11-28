@@ -84,7 +84,7 @@ public class DynamicFilterSourceOperator
                     types,
                     filterChannels,
                     filterDynamicFilterNames,
-                    dynamicFilterClientSupplier.createClient(driverContext.getPipelineContext().getTaskId(), sourceId, driverId++, expectedDrivers));
+                    dynamicFilterClientSupplier.createClient(driverContext.getPipelineContext().getTaskId(), sourceId, driverId++, expectedDrivers, null));
         }
 
         @Override

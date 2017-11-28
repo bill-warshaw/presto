@@ -15,6 +15,7 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.server.DynamicFilterService;
+import com.facebook.presto.spi.type.TypeManager;
 
 import javax.inject.Inject;
 
@@ -32,7 +33,7 @@ public class InMemoryDynamicFilterClientSupplier
     }
 
     @Override
-    public DynamicFilterClient createClient(TaskId taskId, String source, int driverId, int expectedDriversCount)
+    public DynamicFilterClient createClient(TaskId taskId, String source, int driverId, int expectedDriversCount, TypeManager manager)
     {
         return new InMemoryDynamicFilterClient(service, taskId, source, driverId, expectedDriversCount);
     }
