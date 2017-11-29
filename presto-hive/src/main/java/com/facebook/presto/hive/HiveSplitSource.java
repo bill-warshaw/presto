@@ -98,6 +98,8 @@ class HiveSplitSource
     private final DataSize maxSplitSize;
     private final DataSize maxInitialSplitSize;
     private final AtomicInteger remainingInitialSplits;
+    //TODO: Make this configurable. May be a session property
+    public static final int DF_TIMEOUT = 500; // Microseconds to wait for DF summary
 
     private final HiveSplitLoader splitLoader;
     private final AtomicReference<State> stateReference;
@@ -552,7 +554,7 @@ class HiveSplitSource
     {
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
-            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, 5, TimeUnit.SECONDS);
+            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, DF_TIMEOUT, TimeUnit.MICROSECONDS);
             description.ifPresent(dynamicFilterDescriptionBuilder::add);
         }
         return dynamicFilterDescriptionBuilder.build();
