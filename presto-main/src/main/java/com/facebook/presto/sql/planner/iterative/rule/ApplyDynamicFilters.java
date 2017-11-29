@@ -59,7 +59,7 @@ public class ApplyDynamicFilters
     }
 
     @Override
-    public Optional<PlanNode> apply(JoinNode node, Captures captures, Context context)
+    public Result apply(JoinNode node, Captures captures, Context context)
     {
         List<EquiJoinClause> criteria = node.getCriteria();
         Assignments existingAssignments = node.getDynamicFilterAssignments();
@@ -69,7 +69,7 @@ public class ApplyDynamicFilters
                 .collect(toImmutableList());
 
         if (unprocessedClauses.isEmpty()) {
-            return Optional.empty();
+            return Result.empty();
         }
 
         Assignments.Builder assignments = Assignments.builder();
@@ -86,7 +86,7 @@ public class ApplyDynamicFilters
             assignments.put(assignedSymbol, buildSymbol.toSymbolReference());
         }
 
-        return Optional.of(
+        return Result.ofPlanNode(
                 new JoinNode(
                         node.getId(),
                         node.getType(),
