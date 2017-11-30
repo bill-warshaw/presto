@@ -125,9 +125,9 @@ public class DynamicFilterAndProjectOperator
                         final Expression expr = DomainTranslator.toPredicate(tupleDomain);
                         final Optional<RowExpression> rowExpression = converter.expressionToRowExpression(Optional.of(expr));
                         final RowExpression combinedExpression = call(logicalExpressionSignature(LogicalBinaryExpression.Type.AND),
-                            BOOLEAN,
-                            rowExpression.get(),
-                            staticFilter.get());
+                                BOOLEAN,
+                                rowExpression.get(),
+                                staticFilter.get());
                         dynamicPageProcessor = Optional.of(exprCompiler.compilePageProcessor(Optional.of(combinedExpression), projections).get());
                         state = DynamicProcessorState.DONE;
                     }

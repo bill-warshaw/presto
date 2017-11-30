@@ -657,10 +657,10 @@ public class PlanPrinter
         public Void visitDistinctLimit(DistinctLimitNode node, Integer indent)
         {
             print(indent, "- DistinctLimit%s[%s]%s => [%s]",
-                node.isPartial() ? "Partial" : "",
-                node.getLimit(),
-                formatHash(node.getHashSymbol()),
-                formatOutputs(node.getOutputSymbols()));
+                    node.isPartial() ? "Partial" : "",
+                    node.getLimit(),
+                    formatHash(node.getHashSymbol()),
+                    formatOutputs(node.getOutputSymbols()));
             printCost(indent + 2, node);
             printStats(indent + 2, node.getId());
             return processChildren(node, indent + 1);

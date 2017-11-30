@@ -176,7 +176,8 @@ public final class SqlToRowExpressionTranslator
         return result;
     }
 
-    private static class ExpressionVisitor extends Visitor
+    private static class ExpressionVisitor
+            extends Visitor
     {
         private Map<Expression, Type> exprTypes = new HashMap();
 

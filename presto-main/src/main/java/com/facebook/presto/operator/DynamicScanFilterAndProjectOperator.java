@@ -79,21 +79,21 @@ public class DynamicScanFilterAndProjectOperator
     private DynamicProcessorState state = DynamicProcessorState.NOTFOUND;
 
     protected DynamicScanFilterAndProjectOperator(
-        OperatorContext operatorContext,
-        PlanNodeId sourceId,
-        PageSourceProvider pageSourceProvider,
-        CursorProcessor cursorProcessor,
-        PageProcessor pageProcessor,
-        Iterable<ColumnHandle> columns,
-        Iterable<Type> types,
-        MergingPageOutput mergingOutput,
-        List<RowExpression> projections,
-        ExpressionCompiler expressionCompiler,
-        DynamicFilter dynamicFilter,
-        Optional<RowExpression> staticFilter,
-        DynamicFilterClient client,
-        RowExpressionConverter converter,
-        QueryId queryId)
+            OperatorContext operatorContext,
+            PlanNodeId sourceId,
+            PageSourceProvider pageSourceProvider,
+            CursorProcessor cursorProcessor,
+            PageProcessor pageProcessor,
+            Iterable<ColumnHandle> columns,
+            Iterable<Type> types,
+            MergingPageOutput mergingOutput,
+            List<RowExpression> projections,
+            ExpressionCompiler expressionCompiler,
+            DynamicFilter dynamicFilter,
+            Optional<RowExpression> staticFilter,
+            DynamicFilterClient client,
+            RowExpressionConverter converter,
+            QueryId queryId)
     {
         super(operatorContext, sourceId, pageSourceProvider, cursorProcessor,
             pageProcessor, columns, types, mergingOutput);
@@ -120,9 +120,9 @@ public class DynamicScanFilterAndProjectOperator
 
                         final Optional<RowExpression> rowExpression = converter.expressionToRowExpression(Optional.of(expr));
                         final RowExpression combinedExpression = call(logicalExpressionSignature(LogicalBinaryExpression.Type.AND),
-                            BOOLEAN,
-                            rowExpression.get(),
-                            staticFilter.get());
+                                BOOLEAN,
+                                rowExpression.get(),
+                                staticFilter.get());
                         dynamicPageProcessor = exprCompiler.compilePageProcessor(Optional.of(combinedExpression), projections).get();
                         dynamicCursorProcessor = exprCompiler.compileCursorProcessor(Optional.of(combinedExpression), projections, getSourceId()).get();
                         state = DynamicProcessorState.DONE;

@@ -59,7 +59,7 @@ public class DynamicFilterResource
             DynamicFilterSummary dynamicFilterSummary)
     {
         log.debug("Storing dynamic summary for queryId: " + queryId + " taskId: " + taskId
-            + " source: " + source + " driverId: " + driverId);
+                + " source: " + source + " driverId: " + driverId);
         service.storeOrMergeSummary(queryId, source, stageId, taskId, driverId, dynamicFilterSummary, expectedCount);
         return Response.ok().build();
     }

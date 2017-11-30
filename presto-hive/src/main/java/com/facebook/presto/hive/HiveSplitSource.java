@@ -513,7 +513,7 @@ class HiveSplitSource
                     }
                     else {
                         log.info("Partition got pruned due to dynamic filters: "
-                            + hiveSplit.getPath() + " for table " + hiveSplit.getDatabase() + "." + hiveSplit.getTable());
+                                + hiveSplit.getPath() + " for table " + hiveSplit.getDatabase() + "." + hiveSplit.getTable());
                     }
                 }
             }

@@ -33,7 +33,6 @@ import io.airlift.json.ObjectMapperProvider;
 import io.airlift.log.Logger;
 
 import java.net.URI;
-import java.net.URISyntaxException;
 
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static com.google.common.net.MediaType.JSON_UTF_8;
@@ -126,12 +125,12 @@ public class HttpDynamicFilterClient
     {
         ObjectMapperProvider provider = new ObjectMapperProvider();
         if (typeManager != null) {
-          ImmutableMap.Builder deserializers = ImmutableMap.builder();
-          BlockEncodingManager blockEncodingSerde = new BlockEncodingManager(new TypeRegistry());
-          deserializers.put(Block.class, new BlockJsonSerde.Deserializer(blockEncodingSerde));
-          deserializers.put(Type.class, new TypeDeserializer(new TypeRegistry()));
-          provider.setJsonDeserializers(deserializers.build());
-          provider.setJsonSerializers(ImmutableMap.of(Block.class, new BlockJsonSerde.Serializer(blockEncodingSerde)));
+            ImmutableMap.Builder deserializers = ImmutableMap.builder();
+            BlockEncodingManager blockEncodingSerde = new BlockEncodingManager(new TypeRegistry());
+            deserializers.put(Block.class, new BlockJsonSerde.Deserializer(blockEncodingSerde));
+            deserializers.put(Type.class, new TypeDeserializer(new TypeRegistry()));
+            provider.setJsonDeserializers(deserializers.build());
+            provider.setJsonSerializers(ImmutableMap.of(Block.class, new BlockJsonSerde.Serializer(blockEncodingSerde)));
         }
         return provider;
     }
