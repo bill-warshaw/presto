@@ -1150,9 +1150,9 @@ public class LocalExecutionPlanner
                     Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(translatedFilter, translatedProjections, sourceNode.getId());
                     Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
                     SourceOperatorFactory operatorFactory;
-                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && dynamicFilters.get().size() == 1) {
+                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
                         RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
-                        DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
+                        //DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
                         operatorFactory = new DynamicScanFilterAndProjectOperator.DynamicScanFilterAndProjectOperatorFactory(
                                 context.getNextOperatorId(),
                                 planNodeId,
@@ -1165,7 +1165,7 @@ public class LocalExecutionPlanner
                                 getFilterAndProjectMinOutputPageSize(session),
                                 getFilterAndProjectMinOutputPageRowCount(session),
                                 translatedProjections, expressionCompiler, translatedFilter,
-                                dynamicFilter, dynamicFilterClientSupplier,
+                                dynamicFilters.get(), dynamicFilterClientSupplier,
                                 session.getQueryId(), converter);
                     }
                     else {
@@ -1189,9 +1189,8 @@ public class LocalExecutionPlanner
 
                     OperatorFactory operatorFactory;
                     //TODO: Currently does not support more than 1 dynamic filter, need to add support for more than 1
-                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && dynamicFilters.get().size() == 1) {
+                    if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
                         RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
-                        DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
                         operatorFactory = new DynamicFilterAndProjectOperator.DynamicFilterAndProjectOperatorFactory(
                             context.getNextOperatorId(),
                             planNodeId,
@@ -1200,7 +1199,7 @@ public class LocalExecutionPlanner
                             getFilterAndProjectMinOutputPageSize(session),
                             getFilterAndProjectMinOutputPageRowCount(session),
                             translatedProjections, expressionCompiler, translatedFilter,
-                            dynamicFilter, dynamicFilterClientSupplier,
+                            dynamicFilters.get(), dynamicFilterClientSupplier,
                             session.getQueryId(), converter);
                     }
                     else {

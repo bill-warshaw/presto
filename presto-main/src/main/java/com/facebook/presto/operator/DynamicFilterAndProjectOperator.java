@@ -17,56 +17,29 @@ import com.facebook.presto.operator.project.MergingPageOutput;
 import com.facebook.presto.operator.project.PageProcessor;
 import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.DynamicFilter;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
-import com.facebook.presto.sql.planner.DomainTranslator;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.sql.relational.RowExpression;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.LogicalBinaryExpression;
-import com.facebook.presto.sql.tree.SymbolReference;
 import com.facebook.presto.util.RowExpressionConverter;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
 
-import io.airlift.http.client.FullJsonResponseHandler.JsonResponse;
 import io.airlift.units.DataSize;
 
-import javax.ws.rs.core.Response;
-
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.sql.relational.Expressions.call;
-import static com.facebook.presto.sql.relational.Signatures.logicalExpressionSignature;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
 public class DynamicFilterAndProjectOperator
         extends FilterAndProjectOperator
 {
-    private final List<RowExpression> projections;
-    private final ExpressionCompiler exprCompiler;
-    private final DynamicFilter dynamicFilter;
-    private final Optional<RowExpression> staticFilter;
-    private final DynamicFilterClient client;
-    private final RowExpressionConverter converter;
-    private final QueryId queryId;
-
-    private Optional<PageProcessor> dynamicPageProcessor = Optional.empty();
+    private final DynamicFilterOperatorCollector dfCollector;
 
     enum DynamicProcessorState {
         NOTFOUND,
@@ -74,113 +47,61 @@ public class DynamicFilterAndProjectOperator
         DONE,
         FAILED
     }
-    private DynamicProcessorState state = DynamicProcessorState.NOTFOUND;
+
     public DynamicFilterAndProjectOperator(OperatorContext operatorContext,
             Iterable<? extends Type> types,
             PageProcessor processor,
             MergingPageOutput mergingOutput,
             List<RowExpression> projections,
             ExpressionCompiler expressionCompiler,
-            DynamicFilter dynamicFilter,
+            Set<DynamicFilter> dynamicFilters,
             Optional<RowExpression> staticFilter,
             DynamicFilterClient client,
             RowExpressionConverter converter,
             QueryId queryId)
     {
         super(operatorContext, types, processor, mergingOutput);
-        this.projections = requireNonNull(projections, "projections is null");
-        this.exprCompiler = requireNonNull(expressionCompiler, "expressionCompiler is null");
-        this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilters is null");
-        this.staticFilter = requireNonNull(staticFilter, "staticFilter is null");
-        this.client = requireNonNull(client, "client is null");
-        this.converter = requireNonNull(converter, "converter is null");
-        this.queryId = requireNonNull(queryId, "queryId is null");
+        dfCollector = new DynamicFilterOperatorCollector(projections, expressionCompiler, dynamicFilters, staticFilter, client, converter, queryId);
     }
 
     @Override
     public void addInput(Page page)
     {
-        if (state == DynamicProcessorState.NOTFOUND) {
-            collectDynamicSummary();
-        }
-        if (state != DynamicProcessorState.DONE) {
+        dfCollector.collectDynamicSummary();
+        if (dfCollector.isDone()) {
             super.addInput(page);
         }
         else {
-            super.processPage(page, dynamicPageProcessor.get());
+            super.processPage(page, dfCollector.getDynamicPageProcessor());
         }
     }
 
-    private void collectDynamicSummary()
+    private static class DynamicFilterOperatorCollector extends AbstractDynamicFilterOperatorCollector
     {
-        final ListenableFuture result = this.client.getSummary(queryId.toString(), dynamicFilter.getTupleDomainSourceId());
-        Futures.addCallback(result, new FutureCallback<JsonResponse<DynamicFilterSummary>>()
+        private PageProcessor dynamicPageProcessor;
+
+        public DynamicFilterOperatorCollector(List<RowExpression> projections,
+                ExpressionCompiler expressionCompiler,
+                Set<DynamicFilter> dynamicFilters,
+                Optional<RowExpression> staticFilter,
+                DynamicFilterClient client,
+                RowExpressionConverter converter,
+                QueryId queryId)
         {
-            public void onSuccess(JsonResponse<DynamicFilterSummary> jsonResponse)
-            {
-                try {
-                    if (jsonResponse.getStatusCode() == Response.Status.OK.getStatusCode()) {
-                        final DynamicFilterSummary summary = jsonResponse.getValue();
-                        final TupleDomain<Symbol> tupleDomain = translateSummaryIntoTupleDomain(summary, ImmutableSet.of(dynamicFilter));
-                        final Expression expr = DomainTranslator.toPredicate(tupleDomain);
-                        final Optional<RowExpression> rowExpression = converter.expressionToRowExpression(Optional.of(expr));
-                        final RowExpression combinedExpression = call(logicalExpressionSignature(LogicalBinaryExpression.Type.AND),
-                                BOOLEAN,
-                                rowExpression.get(),
-                                staticFilter.get());
-                        dynamicPageProcessor = Optional.of(exprCompiler.compilePageProcessor(Optional.of(combinedExpression), projections).get());
-                        state = DynamicProcessorState.DONE;
-                    }
-                    else if (jsonResponse.getStatusCode() == Response.Status.NOT_FOUND.getStatusCode()) {
-                        state = DynamicProcessorState.NOTFOUND;
-                    }
-                    else {
-                        state = DynamicProcessorState.FAILED;
-                    }
-                }
-                catch (Exception e) {
-                    state = DynamicProcessorState.FAILED;
-                }
-            }
-
-            public void onFailure(Throwable thrown)
-            {
-                state = DynamicProcessorState.FAILED;
-            }
-        });
-    }
-
-    private TupleDomain translateSummaryIntoTupleDomain(DynamicFilterSummary summary, Set<DynamicFilter> dynamicFilters)
-    {
-        if (!summary.getTupleDomain().getDomains().isPresent()) {
-            return TupleDomain.all();
+            super(projections, expressionCompiler, dynamicFilters, staticFilter, client, converter, queryId);
         }
 
-        Map<String, Symbol> sourceExpressionSymbols = extractSourceExpressionSymbols(dynamicFilters);
-        ImmutableMap.Builder<Symbol, Domain> domainBuilder = ImmutableMap.builder();
-        for (Map.Entry<String, Domain> entry : summary.getTupleDomain().getDomains().get().entrySet()) {
-            Symbol actualSymbol = sourceExpressionSymbols.get(entry.getKey());
-            if (actualSymbol == null) {
-                continue;
-            }
-            domainBuilder.put(actualSymbol, entry.getValue());
+        @Override
+        protected void initDynamicProcessors(RowExpression combinedExpression, List<RowExpression> projections,
+                ExpressionCompiler exprCompiler)
+        {
+            dynamicPageProcessor = exprCompiler.compilePageProcessor(Optional.of(combinedExpression), projections).get();
         }
 
-        final ImmutableMap<Symbol, Domain> domainMap = domainBuilder.build();
-        return domainMap.isEmpty() ? TupleDomain.all() : TupleDomain.withColumnDomains(domainMap);
-    }
-
-    private Map<String, Symbol> extractSourceExpressionSymbols(Set<DynamicFilter> dynamicFilters)
-    {
-        ImmutableMap.Builder<String, Symbol> resultBuilder = ImmutableMap.builder();
-        for (DynamicFilter dynamicFilter : dynamicFilters) {
-            Expression expression = dynamicFilter.getSourceExpression();
-            if (!(expression instanceof SymbolReference)) {
-                continue;
-            }
-            resultBuilder.put(dynamicFilter.getTupleDomainName(), Symbol.from(expression));
+        public PageProcessor getDynamicPageProcessor()
+        {
+            return dynamicPageProcessor;
         }
-        return resultBuilder.build();
     }
 
     public static class DynamicFilterAndProjectOperatorFactory
@@ -194,7 +115,7 @@ public class DynamicFilterAndProjectOperator
         private final int minOutputPageRowCount;
         private final List<RowExpression> projections;
         private final ExpressionCompiler exprCompiler;
-        private final DynamicFilter dynamicFilter;
+        private final Set<DynamicFilter> dynamicFilter;
         private final Optional<RowExpression> staticFilter;
         private final DynamicFilterClientSupplier dynamicFilterClientSupplier;
         private final QueryId queryId;
@@ -210,7 +131,7 @@ public class DynamicFilterAndProjectOperator
                 List<RowExpression> projections,
                 ExpressionCompiler exprCompiler,
                 Optional<RowExpression> staticFilter,
-                DynamicFilter dynamicFilter,
+                Set<DynamicFilter> dynamicFilter,
                 DynamicFilterClientSupplier dynamicFilterClientSupplier,
                 QueryId queryId,
                 RowExpressionConverter converter)
