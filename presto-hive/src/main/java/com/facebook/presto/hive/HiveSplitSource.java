@@ -32,7 +32,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.concurrent.MoreFutures;
 import io.airlift.log.Logger;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
@@ -50,7 +49,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -460,18 +458,21 @@ class HiveSplitSource
         TupleDomain<HiveColumnHandle> runtimeTupleDomain = dynamicFilterDescriptions.stream()
                 .map(DynamicFilterDescription::getTupleDomain)
                 .map(domain -> domain.transform(HiveColumnHandle.class::cast))
-                .reduce(TupleDomain.none(), TupleDomain::columnWiseUnion);
+                .reduce(TupleDomain.all(), TupleDomain::intersect);
 
         Optional<Map<HiveColumnHandle, Domain>> domains = runtimeTupleDomain.getDomains();
-        if (!domains.isPresent() || domains.get().size() == 0) {
+        if (runtimeTupleDomain.isAll() || !domains.isPresent() || domains.get().size() == 0) {
+            log.info("DF Empty Domain or All");
             return splits;
         }
 
+        log.info("DF Non empty Domain");
         DomainsCache domainsCache = new DomainsCache(domains.get());
 
         ImmutableList.Builder<ConnectorSplit> result = ImmutableList.builder();
         for (ConnectorSplit split : splits) {
             HiveSplit hiveSplit = (HiveSplit) split;
+            log.info("DF Non empty Domain for table: " + hiveSplit.getTable() + " db: " + hiveSplit.getDatabase());
             List<HivePartitionKey> partitionKeys = hiveSplit.getPartitionKeys();
             boolean addOriginalSplit = true;
             for (HivePartitionKey partitionKey : partitionKeys) {
@@ -518,7 +519,21 @@ class HiveSplitSource
                 }
             }
             if (addOriginalSplit) {
-                result.add(split);
+                log.info("DF Effective Predicate: " + hiveSplit.getEffectivePredicate().toString());
+                result.add(new HiveSplit(
+                        hiveSplit.getDatabase(),
+                        hiveSplit.getTable(),
+                        hiveSplit.getPartitionName(),
+                        hiveSplit.getPath(),
+                        hiveSplit.getStart(),
+                        hiveSplit.getLength(),
+                        hiveSplit.getSchema(),
+                        hiveSplit.getPartitionKeys(),
+                        hiveSplit.getAddresses(),
+                        hiveSplit.getBucketNumber(),
+                        hiveSplit.isForceLocalScheduling(),
+                        hiveSplit.getEffectivePredicate().intersect(runtimeTupleDomain),
+                        hiveSplit.getColumnCoercions()));
             }
         }
         return result.build();
@@ -554,8 +569,16 @@ class HiveSplitSource
     {
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
-            Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture, DF_TIMEOUT, TimeUnit.MICROSECONDS);
-            description.ifPresent(dynamicFilterDescriptionBuilder::add);
+            try {
+                DynamicFilterDescription description = descriptionFuture.get();
+                log.info("DF collected " + description.getTupleDomain().toString());
+                dynamicFilterDescriptionBuilder.add(description);
+                //description.ifPresent(dynamicFilterDescriptionBuilder::add);
+            }
+            catch (Exception e) {
+                log.error("DF error collection: " + e.getMessage(), e);
+                continue;
+            }
         }
         return dynamicFilterDescriptionBuilder.build();
     }
