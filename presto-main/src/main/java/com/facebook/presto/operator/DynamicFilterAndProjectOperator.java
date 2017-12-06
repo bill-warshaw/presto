@@ -77,13 +77,18 @@ public class DynamicFilterAndProjectOperator
     }
 
     @Override
-    public void finish()
+    public void close() throws Exception
     {
-        super.finish();
-        dfCollector.cleanUp();
+        try {
+            super.close();
+        }
+        finally {
+            dfCollector.cleanUp();
+        }
     }
 
-    private static class DynamicFilterOperatorCollector extends AbstractDynamicFilterOperatorCollector
+    private static class DynamicFilterOperatorCollector
+            extends AbstractDynamicFilterOperatorCollector
     {
         private PageProcessor dynamicPageProcessor;
 

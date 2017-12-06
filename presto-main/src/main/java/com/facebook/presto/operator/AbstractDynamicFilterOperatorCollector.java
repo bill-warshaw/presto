@@ -109,26 +109,25 @@ public abstract class AbstractDynamicFilterOperatorCollector
                 final TupleDomain<Symbol> tupleDomain = translateSummaryIntoTupleDomain(summary, ImmutableSet.of(df));
                 dfTupleDomain.accumulateAndGet(tupleDomain, TupleDomain::intersect);
                 dfState.put(df, DynamicProcessorState.DONE);
-                //log.info("DF " + df + " is collected.");
             }
             else if (jsonResponse.getStatusCode() == Response.Status.NOT_FOUND.getStatusCode()) {
-                //log.info("DF " + df + " is not found yet.");
                 dfState.put(df, DynamicProcessorState.NOTFOUND);
             }
             else {
-                //log.info("DF " + df + " fail to be collected.");
                 dfState.put(df, DynamicProcessorState.FAILED);
             }
         }
         catch (Exception exp) {
-            //log.error("DF " + df + " fail to be collected. Error: " + exp.getMessage(), exp);
             dfState.put(df, DynamicProcessorState.FAILED);
         }
     }
 
     public void collectDynamicSummaryAsync()
     {
-        CompletableFuture.runAsync(this::collectDynamicSummary, es);
+        CompletableFuture.runAsync(this::collectDynamicSummary, es).whenComplete((value, exception) ->
+        {
+            this.cleanUp();
+        });
     }
 
     public void cleanUp()
@@ -170,7 +169,6 @@ public abstract class AbstractDynamicFilterOperatorCollector
 
     private void afterDFcollection()
     {
-        log.info("Initializing Dynamic Processors.");
         if (globalState == DynamicProcessorState.DONE || globalState == DynamicProcessorState.FAILED) {
             return;
         }
@@ -180,16 +178,13 @@ public abstract class AbstractDynamicFilterOperatorCollector
                 final Expression expr = DomainTranslator.toPredicate(tupleDomain);
                 final Optional<RowExpression> rowExpression = converter.expressionToRowExpression(Optional.of(expr));
                 final RowExpression combinedExpression = call(logicalExpressionSignature(LogicalBinaryExpression.Type.AND),
-                    BOOLEAN,
-                    rowExpression.get(),
-                    staticFilter.get());
+                        BOOLEAN,
+                        rowExpression.get(),
+                        staticFilter.get());
                 initDynamicProcessors(combinedExpression, projections, exprCompiler);
                 globalState = DynamicProcessorState.DONE;
-                log.info("DF Processor initialized");
             }
             catch (Exception e) {
-                log.error("Error initializing DF procesor: " + e.getMessage(), e);
-                //log.error(message.toString());
                 globalState = DynamicProcessorState.FAILED;
                 throw e;
             }

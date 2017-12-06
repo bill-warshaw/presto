@@ -45,21 +45,21 @@ public class DynamicScanFilterAndProjectOperator
     private final DynamicFilterOperatorCollector dfCollector;
 
     protected DynamicScanFilterAndProjectOperator(
-        OperatorContext operatorContext,
-        PlanNodeId sourceId,
-        PageSourceProvider pageSourceProvider,
-        CursorProcessor cursorProcessor,
-        PageProcessor pageProcessor,
-        Iterable<ColumnHandle> columns,
-        Iterable<Type> types,
-        MergingPageOutput mergingOutput,
-        List<RowExpression> projections,
-        ExpressionCompiler expressionCompiler,
-        Set<DynamicFilter> dynamicFilters,
-        Optional<RowExpression> staticFilter,
-        DynamicFilterClient client,
-        RowExpressionConverter converter,
-        QueryId queryId)
+            OperatorContext operatorContext,
+            PlanNodeId sourceId,
+            PageSourceProvider pageSourceProvider,
+            CursorProcessor cursorProcessor,
+            PageProcessor pageProcessor,
+            Iterable<ColumnHandle> columns,
+            Iterable<Type> types,
+            MergingPageOutput mergingOutput,
+            List<RowExpression> projections,
+            ExpressionCompiler expressionCompiler,
+            Set<DynamicFilter> dynamicFilters,
+            Optional<RowExpression> staticFilter,
+            DynamicFilterClient client,
+            RowExpressionConverter converter,
+            QueryId queryId)
     {
         super(operatorContext, sourceId, pageSourceProvider, cursorProcessor,
             pageProcessor, columns, types, mergingOutput);
@@ -102,13 +102,14 @@ public class DynamicScanFilterAndProjectOperator
     }
 
     @Override
-    public void finish()
+    public void close()
     {
-        super.finish();
+        super.close();
         dfCollector.cleanUp();
     }
 
-    private static class DynamicFilterOperatorCollector extends AbstractDynamicFilterOperatorCollector
+    private static class DynamicFilterOperatorCollector
+            extends AbstractDynamicFilterOperatorCollector
     {
         private CursorProcessor dynamicCursorProcessor;
         private PageProcessor dynamicPageProcessor;
