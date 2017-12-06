@@ -32,6 +32,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.concurrent.MoreFutures;
 import io.airlift.log.Logger;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
@@ -105,6 +106,7 @@ class HiveSplitSource
     private final DateTimeZone timeZone;
     private final TypeManager typeManager;
     private volatile boolean closed;
+    private Optional<TupleDomain> computedRuntimeFilter = Optional.empty();
 
     private final AtomicLong estimatedSplitSizeInBytes = new AtomicLong();
 
@@ -453,35 +455,28 @@ class HiveSplitSource
 
     private List<ConnectorSplit> dynamicallyFilterSplits(List<ConnectorSplit> splits)
     {
-        List<DynamicFilterDescription> dynamicFilterDescriptions = getAvailableDynamicFilterDescriptions();
-
-        TupleDomain<HiveColumnHandle> runtimeTupleDomain = dynamicFilterDescriptions.stream()
-                .map(DynamicFilterDescription::getTupleDomain)
-                .map(domain -> domain.transform(HiveColumnHandle.class::cast))
-                .reduce(TupleDomain.all(), TupleDomain::intersect);
+        TupleDomain<HiveColumnHandle> runtimeTupleDomain = getRuntimeTupleDomains();
 
         Optional<Map<HiveColumnHandle, Domain>> domains = runtimeTupleDomain.getDomains();
         if (runtimeTupleDomain.isAll() || !domains.isPresent() || domains.get().size() == 0) {
-            log.info("DF Empty Domain or All");
             return splits;
         }
 
-        log.info("DF Non empty Domain");
         DomainsCache domainsCache = new DomainsCache(domains.get());
 
         ImmutableList.Builder<ConnectorSplit> result = ImmutableList.builder();
         for (ConnectorSplit split : splits) {
             HiveSplit hiveSplit = (HiveSplit) split;
-            log.info("DF Non empty Domain for table: " + hiveSplit.getTable() + " db: " + hiveSplit.getDatabase());
             List<HivePartitionKey> partitionKeys = hiveSplit.getPartitionKeys();
-            boolean addOriginalSplit = true;
+            boolean removeSplit = false;
             for (HivePartitionKey partitionKey : partitionKeys) {
                 String partitionKeyName = partitionKey.getName().toLowerCase(Locale.ENGLISH);
                 Collection<Domain> relevantDomains = domainsCache.getDomains(partitionKeyName);
                 Type type = partitionKey.getHiveType().getType(typeManager);
-                Object objectToWrite;
+                Domain partitionValue;
                 try {
-                    objectToWrite = HiveUtil.parsePartitionValue(partitionKey.getName(), partitionKey.getValue(), type, timeZone).getValue();
+                    Object objectToWrite = HiveUtil.parsePartitionValue(partitionKey.getName(), partitionKey.getValue(), type, timeZone).getValue();
+                    partitionValue = Domain.singleValue(type, objectToWrite);
                 }
                 catch (PrestoException e) {
                     // if the type is not supported, skip pruning for that partition
@@ -492,34 +487,14 @@ class HiveSplitSource
 
                     throw e;
                 }
-                for (Domain predicateDomain : relevantDomains) {
-                    addOriginalSplit = false;
-                    if (predicateDomain.overlaps(Domain.singleValue(type, objectToWrite))) {
-                        result.add(new HiveSplit(
-                                hiveSplit.getDatabase(),
-                                hiveSplit.getTable(),
-                                hiveSplit.getPartitionName(),
-                                hiveSplit.getPath(),
-                                hiveSplit.getStart(),
-                                hiveSplit.getLength(),
-                                hiveSplit.getFileSize(),
-                                hiveSplit.getSchema(),
-                                hiveSplit.getPartitionKeys(),
-                                hiveSplit.getAddresses(),
-                                hiveSplit.getBucketNumber(),
-                                hiveSplit.isForceLocalScheduling(),
-                                hiveSplit.getEffectivePredicate().intersect(runtimeTupleDomain),
-                                hiveSplit.getColumnCoercions()));
-                        break;
-                    }
-                    else {
-                        log.info("Partition got pruned due to dynamic filters: "
-                                + hiveSplit.getPath() + " for table " + hiveSplit.getDatabase() + "." + hiveSplit.getTable());
-                    }
+                Predicate<Domain> checkOverlap = d -> d.overlaps(partitionValue);
+                if (relevantDomains.stream().noneMatch(checkOverlap)) {
+                    log.info("Partition got pruned due to dynamic filters: "
+                            + hiveSplit.getPath() + " for table " + hiveSplit.getDatabase() + "." + hiveSplit.getTable());
+                    removeSplit = true;
                 }
             }
-            if (addOriginalSplit) {
-                log.info("DF Effective Predicate: " + hiveSplit.getEffectivePredicate().toString());
+            if (!removeSplit) {
                 result.add(new HiveSplit(
                         hiveSplit.getDatabase(),
                         hiveSplit.getTable(),
@@ -527,6 +502,7 @@ class HiveSplitSource
                         hiveSplit.getPath(),
                         hiveSplit.getStart(),
                         hiveSplit.getLength(),
+                        hiveSplit.getFileSize(),
                         hiveSplit.getSchema(),
                         hiveSplit.getPartitionKeys(),
                         hiveSplit.getAddresses(),
@@ -565,22 +541,30 @@ class HiveSplitSource
         }
     }
 
-    private List<DynamicFilterDescription> getAvailableDynamicFilterDescriptions()
+    private TupleDomain<HiveColumnHandle> getRuntimeTupleDomains()
     {
+        // Check if cached
+        if (computedRuntimeFilter.isPresent()) {
+            return computedRuntimeFilter.get();
+        }
+
+        // compute runtime filter
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
-            try {
-                DynamicFilterDescription description = descriptionFuture.get();
-                log.info("DF collected " + description.getTupleDomain().toString());
-                dynamicFilterDescriptionBuilder.add(description);
-                //description.ifPresent(dynamicFilterDescriptionBuilder::add);
-            }
-            catch (Exception e) {
-                log.error("DF error collection: " + e.getMessage(), e);
-                continue;
-            }
+            final Optional<DynamicFilterDescription> description = MoreFutures.tryGetFutureValue(descriptionFuture);
+            description.ifPresent(dynamicFilterDescriptionBuilder::add);
         }
-        return dynamicFilterDescriptionBuilder.build();
+
+        final ImmutableList<DynamicFilterDescription> dynamicFilterDescriptions = dynamicFilterDescriptionBuilder.build();
+        TupleDomain runtimeFilter = dynamicFilterDescriptions.stream()
+                .map(DynamicFilterDescription::getTupleDomain)
+                .map(domain -> domain.transform(HiveColumnHandle.class::cast))
+                .reduce(TupleDomain.all(), TupleDomain::intersect);
+        // if all dynamic filter has been applied then cache it.
+        if (dynamicFilterDescriptions.size() == filters.size()) {
+            computedRuntimeFilter = Optional.of(runtimeFilter);
+        }
+        return runtimeFilter;
     }
 
     @Override

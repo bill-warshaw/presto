@@ -65,7 +65,7 @@ public class FilterAndProjectOperator
     }
 
     @Override
-    public final void finish()
+    public void finish()
     {
         mergingOutput.finish();
         finishing = true;

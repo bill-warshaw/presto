@@ -62,18 +62,25 @@ public class DynamicFilterAndProjectOperator
     {
         super(operatorContext, types, processor, mergingOutput);
         dfCollector = new DynamicFilterOperatorCollector(projections, expressionCompiler, dynamicFilters, staticFilter, client, converter, queryId);
+        dfCollector.collectDynamicSummaryAsync();
     }
 
     @Override
     public void addInput(Page page)
     {
-        dfCollector.collectDynamicSummary();
-        if (dfCollector.isDone()) {
+        if (!dfCollector.isDone()) {
             super.addInput(page);
         }
         else {
             super.processPage(page, dfCollector.getDynamicPageProcessor());
         }
+    }
+
+    @Override
+    public void finish()
+    {
+        super.finish();
+        dfCollector.cleanUp();
     }
 
     private static class DynamicFilterOperatorCollector extends AbstractDynamicFilterOperatorCollector

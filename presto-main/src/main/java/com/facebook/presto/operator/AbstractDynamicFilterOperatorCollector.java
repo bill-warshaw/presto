@@ -27,8 +27,6 @@ import com.facebook.presto.sql.tree.SymbolReference;
 import com.facebook.presto.util.RowExpressionConverter;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.http.client.FullJsonResponseHandler;
 import io.airlift.log.Logger;
@@ -39,7 +37,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
@@ -49,7 +52,9 @@ import static java.util.Objects.requireNonNull;
 
 public abstract class AbstractDynamicFilterOperatorCollector
 {
+    public static final int MAX_RETRIES = 5;
     private static final Logger log = Logger.get(AbstractDynamicFilterOperatorCollector.class);
+    public static final int DF_TIMEOUT_MILLIS = 100;
     private final ConcurrentHashMap<DynamicFilter, DynamicProcessorState> dfState = new ConcurrentHashMap<>();
     private final AtomicReference<TupleDomain> dfTupleDomain = new AtomicReference<>(TupleDomain.all());
     private final Optional<RowExpression> staticFilter;
@@ -61,12 +66,19 @@ public abstract class AbstractDynamicFilterOperatorCollector
     private final QueryId queryId;
     enum DynamicProcessorState {
         NOTFOUND,
-        QUERYING,
         DONE,
         FAILED
     }
 
     protected DynamicProcessorState globalState = DynamicProcessorState.NOTFOUND;
+    private ExecutorService es = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        public Thread newThread(Runnable r)
+        {
+            Thread thread = new Thread(r);
+            thread.setDaemon(true);
+            return thread;
+        }
+    });
 
     protected AbstractDynamicFilterOperatorCollector(List<RowExpression> projections,
             ExpressionCompiler expressionCompiler,
@@ -88,51 +100,56 @@ public abstract class AbstractDynamicFilterOperatorCollector
 
     private void fireDFCollection(final DynamicFilter df)
     {
-        // check if collection is already in progress
-        if (dfState.get(df) == DynamicProcessorState.QUERYING) {
-            return;
-        }
-        final ListenableFuture result = client.getSummary(queryId.toString(), df.getTupleDomainSourceId());
-        dfState.put(df, DynamicProcessorState.QUERYING);
-        Futures.addCallback(result, new FutureCallback<FullJsonResponseHandler.JsonResponse<DynamicFilterSummary>>() {
-            public void onSuccess(FullJsonResponseHandler.JsonResponse<DynamicFilterSummary> jsonResponse)
-            {
-                try {
-                    if (jsonResponse.getStatusCode() == Response.Status.OK.getStatusCode()) {
-                        final DynamicFilterSummary summary = jsonResponse.getValue();
-                        final TupleDomain<Symbol> tupleDomain = translateSummaryIntoTupleDomain(summary, ImmutableSet.of(df));
-                        dfTupleDomain.accumulateAndGet(tupleDomain, TupleDomain::intersect);
-                        dfState.put(df, DynamicProcessorState.DONE);
-                        log.info("DF " + df + " is collected.");
-                    }
-                    else if (jsonResponse.getStatusCode() == Response.Status.NOT_FOUND.getStatusCode()) {
-                        log.info("DF " + df + " is not found yet.");
-                        dfState.put(df, DynamicProcessorState.NOTFOUND);
-                    }
-                    else {
-                        log.info("DF " + df + " fail to be collected.");
-                        dfState.put(df, DynamicProcessorState.FAILED);
-                    }
-                }
-                catch (Exception exp) {
-                    log.error("DF " + df + " fail to be collected. Error: " + exp.getMessage(), exp);
-                    dfState.put(df, DynamicProcessorState.FAILED);
-                }
+        try {
+            final ListenableFuture result = client.getSummary(queryId.toString(), df.getTupleDomainSourceId());
+            final Object response = result.get(DF_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            final FullJsonResponseHandler.JsonResponse<DynamicFilterSummary> jsonResponse = (FullJsonResponseHandler.JsonResponse<DynamicFilterSummary>) response;
+            if (jsonResponse.getStatusCode() == Response.Status.OK.getStatusCode()) {
+                final DynamicFilterSummary summary = jsonResponse.getValue();
+                final TupleDomain<Symbol> tupleDomain = translateSummaryIntoTupleDomain(summary, ImmutableSet.of(df));
+                dfTupleDomain.accumulateAndGet(tupleDomain, TupleDomain::intersect);
+                dfState.put(df, DynamicProcessorState.DONE);
+                //log.info("DF " + df + " is collected.");
             }
-
-            public void onFailure(Throwable thrown)
-            {
-                log.error("DF " + df + " fail to be collected. "
-                        + "Throwable Error: " + thrown.getMessage(), thrown);
+            else if (jsonResponse.getStatusCode() == Response.Status.NOT_FOUND.getStatusCode()) {
+                //log.info("DF " + df + " is not found yet.");
+                dfState.put(df, DynamicProcessorState.NOTFOUND);
+            }
+            else {
+                //log.info("DF " + df + " fail to be collected.");
                 dfState.put(df, DynamicProcessorState.FAILED);
             }
-        });
+        }
+        catch (Exception exp) {
+            //log.error("DF " + df + " fail to be collected. Error: " + exp.getMessage(), exp);
+            dfState.put(df, DynamicProcessorState.FAILED);
+        }
     }
 
-    public void collectDynamicSummary()
+    public void collectDynamicSummaryAsync()
     {
-        if (globalState != DynamicProcessorState.DONE || globalState != DynamicProcessorState.FAILED) {
-            collectDynamicSummaryInternal();
+        CompletableFuture.runAsync(this::collectDynamicSummary, es);
+    }
+
+    public void cleanUp()
+    {
+        es.shutdown();
+    }
+
+    private void collectDynamicSummary()
+    {
+        int retry = 0;
+        while (retry < MAX_RETRIES) {
+            if (globalState == DynamicProcessorState.DONE || globalState == DynamicProcessorState.FAILED) {
+                break;
+            }
+            else {
+                collectDynamicSummaryInternal();
+            }
+            retry++;
+        }
+        if (retry == MAX_RETRIES) {
+            afterDFcollection();
         }
     }
 
@@ -141,8 +158,7 @@ public abstract class AbstractDynamicFilterOperatorCollector
         boolean inProgress = false;
         for (ConcurrentHashMap.Entry<DynamicFilter, DynamicProcessorState> e : dfState.entrySet()) {
             DynamicProcessorState state = e.getValue();
-            if (state != DynamicProcessorState.DONE
-                    && state != DynamicProcessorState.FAILED) {
+            if (state != DynamicProcessorState.DONE && state != DynamicProcessorState.FAILED) {
                 inProgress = true;
                 fireDFCollection(e.getKey());
             }
@@ -172,8 +188,10 @@ public abstract class AbstractDynamicFilterOperatorCollector
                 log.info("DF Processor initialized");
             }
             catch (Exception e) {
-                log.error("Error initializing DF procesor", e);
+                log.error("Error initializing DF procesor: " + e.getMessage(), e);
+                //log.error(message.toString());
                 globalState = DynamicProcessorState.FAILED;
+                throw e;
             }
         }
         else {
@@ -216,6 +234,11 @@ public abstract class AbstractDynamicFilterOperatorCollector
             resultBuilder.put(dynamicFilter.getTupleDomainName(), Symbol.from(expression));
         }
         return resultBuilder.build();
+    }
+
+    public boolean isFailed()
+    {
+        return globalState == DynamicProcessorState.FAILED;
     }
 
     public boolean isDone()

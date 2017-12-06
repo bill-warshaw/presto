@@ -193,6 +193,9 @@ public final class SqlToRowExpressionTranslator
             if (node instanceof Cast) {
                 return typeManager.getType(parseTypeSignature(((Cast) node).getType()));
             }
+            else if (node instanceof GenericLiteral) {
+                return typeManager.getType(parseTypeSignature(((GenericLiteral) node).getType()));
+            }
             else {
                 return exprTypes.get(node);
             }
