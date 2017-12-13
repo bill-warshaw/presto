@@ -41,13 +41,6 @@ public class DynamicFilterAndProjectOperator
 {
     private final DynamicFilterOperatorCollector dfCollector;
 
-    enum DynamicProcessorState {
-        NOTFOUND,
-        QUERYING,
-        DONE,
-        FAILED
-    }
-
     public DynamicFilterAndProjectOperator(OperatorContext operatorContext,
             Iterable<? extends Type> types,
             PageProcessor processor,

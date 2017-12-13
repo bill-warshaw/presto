@@ -106,7 +106,6 @@ class HiveSplitSource
     private final DateTimeZone timeZone;
     private final TypeManager typeManager;
     private volatile boolean closed;
-    private Optional<TupleDomain> computedRuntimeFilter = Optional.empty();
 
     private final AtomicLong estimatedSplitSizeInBytes = new AtomicLong();
 
@@ -495,21 +494,7 @@ class HiveSplitSource
                 }
             }
             if (!removeSplit) {
-                result.add(new HiveSplit(
-                        hiveSplit.getDatabase(),
-                        hiveSplit.getTable(),
-                        hiveSplit.getPartitionName(),
-                        hiveSplit.getPath(),
-                        hiveSplit.getStart(),
-                        hiveSplit.getLength(),
-                        hiveSplit.getFileSize(),
-                        hiveSplit.getSchema(),
-                        hiveSplit.getPartitionKeys(),
-                        hiveSplit.getAddresses(),
-                        hiveSplit.getBucketNumber(),
-                        hiveSplit.isForceLocalScheduling(),
-                        hiveSplit.getEffectivePredicate().intersect(runtimeTupleDomain),
-                        hiveSplit.getColumnCoercions()));
+                result.add(split);
             }
         }
         return result.build();
@@ -543,11 +528,6 @@ class HiveSplitSource
 
     private TupleDomain<HiveColumnHandle> getRuntimeTupleDomains()
     {
-        // Check if cached
-        if (computedRuntimeFilter.isPresent()) {
-            return computedRuntimeFilter.get();
-        }
-
         // compute runtime filter
         ImmutableList.Builder<DynamicFilterDescription> dynamicFilterDescriptionBuilder = ImmutableList.builder();
         for (Future<DynamicFilterDescription> descriptionFuture : filters) {
@@ -560,10 +540,7 @@ class HiveSplitSource
                 .map(DynamicFilterDescription::getTupleDomain)
                 .map(domain -> domain.transform(HiveColumnHandle.class::cast))
                 .reduce(TupleDomain.all(), TupleDomain::intersect);
-        // if all dynamic filter has been applied then cache it.
-        if (dynamicFilterDescriptions.size() == filters.size()) {
-            computedRuntimeFilter = Optional.of(runtimeFilter);
-        }
+
         return runtimeFilter;
     }
 
