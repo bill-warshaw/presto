@@ -47,10 +47,18 @@ public final class ClassLoaderSafeConnectorSplitManager
     }
 
     @Override
-    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy, List<Future<DynamicFilterDescription>> dynamicFilters)
+    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSplits(transactionHandle, session, layout, splitSchedulingStrategy);
+        }
+    }
+
+    @Override
+    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy, List<Future<DynamicFilterDescription>> dynamicFilters)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getSplits(transactionHandle, session, layout, splitSchedulingStrategy, dynamicFilters);
         }
     }
 }
