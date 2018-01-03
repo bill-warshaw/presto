@@ -17,7 +17,6 @@ import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.predicate.Domain;
 import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.sql.DynamicFilter;
-import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.planner.DomainTranslator;
 import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.relational.RowExpression;
@@ -33,6 +32,7 @@ import io.airlift.log.Logger;
 
 import javax.ws.rs.core.Response;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -50,20 +50,20 @@ import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Signatures.logicalExpressionSignature;
 import static java.util.Objects.requireNonNull;
 
-public abstract class AbstractDynamicFilterOperatorCollector
+public class DynamicFilterCollector
 {
     public static final int MAX_RETRIES = 5;
-    private static final Logger log = Logger.get(AbstractDynamicFilterOperatorCollector.class);
+    private static final Logger log = Logger.get(DynamicFilterCollector.class);
     public static final int DF_TIMEOUT_MILLIS = 100;
     private final ConcurrentHashMap<DynamicFilter, DynamicProcessorState> dfState = new ConcurrentHashMap<>();
     private final AtomicReference<TupleDomain> dfTupleDomain = new AtomicReference<>(TupleDomain.all());
     private final Optional<RowExpression> staticFilter;
     private final RowExpressionConverter converter;
-    private final List<RowExpression> projections;
-    private final ExpressionCompiler exprCompiler;
     private final Set<DynamicFilter> dynamicFilters;
     private final DynamicFilterClient client;
     private final QueryId queryId;
+    private Optional<RowExpression> resultExpression = Optional.empty();
+    private List<DFCollectorCallback> listeners = new ArrayList();
     enum DynamicProcessorState {
         NOTFOUND,
         DONE,
@@ -80,16 +80,12 @@ public abstract class AbstractDynamicFilterOperatorCollector
         }
     });
 
-    protected AbstractDynamicFilterOperatorCollector(List<RowExpression> projections,
-            ExpressionCompiler expressionCompiler,
-            Set<DynamicFilter> dynamicFilters,
+    public DynamicFilterCollector(Set<DynamicFilter> dynamicFilters,
             Optional<RowExpression> staticFilter,
             DynamicFilterClient client,
             RowExpressionConverter converter,
             QueryId queryId)
     {
-        this.projections = requireNonNull(projections, "projections is null");
-        this.exprCompiler = requireNonNull(expressionCompiler, "expressionCompiler is null");
         this.dynamicFilters = requireNonNull(dynamicFilters, "dynamicFilters is null");
         this.staticFilter = requireNonNull(staticFilter, "staticFilter is null");
         this.client = requireNonNull(client, "client is null");
@@ -181,8 +177,9 @@ public abstract class AbstractDynamicFilterOperatorCollector
                         BOOLEAN,
                         rowExpression.get(),
                         staticFilter.get());
-                initDynamicProcessors(combinedExpression, projections, exprCompiler);
+                resultExpression = Optional.of(combinedExpression);
                 globalState = DynamicProcessorState.DONE;
+                triggerCallback(combinedExpression);
             }
             catch (Exception e) {
                 globalState = DynamicProcessorState.FAILED;
@@ -190,13 +187,20 @@ public abstract class AbstractDynamicFilterOperatorCollector
             }
         }
         else {
-            log.info("DF Processing: Tuple Domain is all");
+            log.debug("DF Processing: Tuple Domain is all");
             globalState = DynamicProcessorState.FAILED;
         }
     }
 
-    protected abstract void initDynamicProcessors(RowExpression combinedExpression, List<RowExpression> projections,
-            ExpressionCompiler exprCompiler);
+    public Optional<RowExpression> getFinalExpression()
+    {
+        if (globalState != DynamicProcessorState.DONE) {
+            return Optional.empty();
+        }
+        else {
+            return resultExpression;
+        }
+    }
 
     private TupleDomain translateSummaryIntoTupleDomain(DynamicFilterSummary summary, Set<DynamicFilter> dynamicFilters)
     {
@@ -231,6 +235,16 @@ public abstract class AbstractDynamicFilterOperatorCollector
         return resultBuilder.build();
     }
 
+    public void addListener(DFCollectorCallback callback)
+    {
+        listeners.add(callback);
+    }
+
+    private void triggerCallback(RowExpression result)
+    {
+        listeners.forEach(callback -> callback.onSuccess(result));
+    }
+
     public boolean isFailed()
     {
         return globalState == DynamicProcessorState.FAILED;
@@ -239,5 +253,10 @@ public abstract class AbstractDynamicFilterOperatorCollector
     public boolean isDone()
     {
         return globalState == DynamicProcessorState.DONE;
+    }
+
+    public interface DFCollectorCallback
+    {
+        void onSuccess(RowExpression result);
     }
 }

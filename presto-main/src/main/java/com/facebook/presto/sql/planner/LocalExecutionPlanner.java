@@ -28,10 +28,10 @@ import com.facebook.presto.operator.AggregationOperator.AggregationOperatorFacto
 import com.facebook.presto.operator.AssignUniqueIdOperator;
 import com.facebook.presto.operator.DeleteOperator.DeleteOperatorFactory;
 import com.facebook.presto.operator.DriverFactory;
-import com.facebook.presto.operator.DynamicFilterAndProjectOperator;
+import com.facebook.presto.operator.DynamicFilterClient;
 import com.facebook.presto.operator.DynamicFilterClientSupplier;
+import com.facebook.presto.operator.DynamicFilterCollector;
 import com.facebook.presto.operator.DynamicFilterSourceOperator.DynamicFilterSourceOperatorFactory;
-import com.facebook.presto.operator.DynamicScanFilterAndProjectOperator;
 import com.facebook.presto.operator.EnforceSingleRowOperator;
 import com.facebook.presto.operator.ExchangeClientSupplier;
 import com.facebook.presto.operator.ExchangeOperator.ExchangeOperatorFactory;
@@ -1148,69 +1148,48 @@ public class LocalExecutionPlanner
             try {
                 if (columns != null) {
                     Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(translatedFilter, translatedProjections, sourceNode.getId());
-                    Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
-                    SourceOperatorFactory operatorFactory;
+                    Supplier<PageProcessor> pageProcessor;
                     if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
                         RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
-                        //DynamicFilter dynamicFilter = dynamicFilters.get().iterator().next();
-                        operatorFactory = new DynamicScanFilterAndProjectOperator.DynamicScanFilterAndProjectOperatorFactory(
-                                context.getNextOperatorId(),
-                                planNodeId,
-                                sourceNode.getId(),
-                                pageSourceProvider,
-                                cursorProcessor,
-                                pageProcessor,
-                                columns,
-                                getTypes(rewrittenProjections, expressionTypes),
-                                getFilterAndProjectMinOutputPageSize(session),
-                                getFilterAndProjectMinOutputPageRowCount(session),
-                                translatedProjections, expressionCompiler, translatedFilter,
-                                dynamicFilters.get(), dynamicFilterClientSupplier,
-                                session.getQueryId(), converter);
+                        DynamicFilterClient client = dynamicFilterClientSupplier.createClient(null, null, -1, -1, converter.getTypeManager());
+                        DynamicFilterCollector dfCollector = new DynamicFilterCollector(dynamicFilters.get(), translatedFilter, client, converter, session.getQueryId());
+                        pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId), Optional.of(dfCollector));
                     }
                     else {
-                        operatorFactory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
-                                context.getNextOperatorId(),
-                                planNodeId,
-                                sourceNode.getId(),
-                                pageSourceProvider,
-                                cursorProcessor,
-                                pageProcessor,
-                                columns,
-                                getTypes(rewrittenProjections, expressionTypes),
-                                getFilterAndProjectMinOutputPageSize(session),
-                                getFilterAndProjectMinOutputPageRowCount(session));
+                        pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
                     }
-
+                    SourceOperatorFactory operatorFactory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
+                            context.getNextOperatorId(),
+                            planNodeId,
+                            sourceNode.getId(),
+                            pageSourceProvider,
+                            cursorProcessor,
+                            pageProcessor,
+                            columns,
+                            getTypes(rewrittenProjections, expressionTypes),
+                            getFilterAndProjectMinOutputPageSize(session),
+                            getFilterAndProjectMinOutputPageRowCount(session));
                     return new PhysicalOperation(operatorFactory, outputMappings, groupEnumerable ? GROUPED_EXECUTION : UNGROUPED_EXECUTION);
                 }
                 else {
-                    Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
-
-                    OperatorFactory operatorFactory;
-                    //TODO: Currently does not support more than 1 dynamic filter, need to add support for more than 1
+                    Supplier<PageProcessor> pageProcessor;
                     if (SystemSessionProperties.isDynamicPartitionPruningEnabled(context.getSession()) && dynamicFilters.isPresent() && !dynamicFilters.get().isEmpty()) {
                         RowExpressionConverter converter = new RowExpressionConverter(sourceLayout, expressionTypes, metadata.getFunctionRegistry(), metadata.getTypeManager(), session);
-                        operatorFactory = new DynamicFilterAndProjectOperator.DynamicFilterAndProjectOperatorFactory(
-                            context.getNextOperatorId(),
-                            planNodeId,
-                            pageProcessor,
-                            getTypes(rewrittenProjections, expressionTypes),
-                            getFilterAndProjectMinOutputPageSize(session),
-                            getFilterAndProjectMinOutputPageRowCount(session),
-                            translatedProjections, expressionCompiler, translatedFilter,
-                            dynamicFilters.get(), dynamicFilterClientSupplier,
-                            session.getQueryId(), converter);
+                        DynamicFilterClient client = dynamicFilterClientSupplier.createClient(null, null, -1, -1, converter.getTypeManager());
+                        DynamicFilterCollector dfCollector = new DynamicFilterCollector(dynamicFilters.get(), translatedFilter, client, converter, session.getQueryId());
+                        pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId), Optional.of(dfCollector));
                     }
                     else {
-                        operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
+                        pageProcessor = expressionCompiler.compilePageProcessor(translatedFilter, translatedProjections, Optional.of(context.getStageId() + "_" + planNodeId));
+                    }
+                    OperatorFactory operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
                             context.getNextOperatorId(),
                             planNodeId,
                             pageProcessor,
                             getTypes(rewrittenProjections, expressionTypes),
                             getFilterAndProjectMinOutputPageSize(session),
                             getFilterAndProjectMinOutputPageRowCount(session));
-                    }
+
                     return new PhysicalOperation(operatorFactory, outputMappings, source);
                 }
             }

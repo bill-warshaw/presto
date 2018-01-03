@@ -22,6 +22,7 @@ import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.DictionaryBlock;
 import com.facebook.presto.spi.block.DictionaryId;
 import com.facebook.presto.spi.block.LazyBlock;
+import com.facebook.presto.sql.DynamicFilter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractIterator;
 
@@ -58,7 +59,7 @@ public class PageProcessor
     {
         this.filter = requireNonNull(filter, "filter is null")
                 .map(pageFilter -> {
-                    if (pageFilter.getInputChannels().size() == 1 && pageFilter.isDeterministic()) {
+                    if (pageFilter.getInputChannels().size() == 1 && pageFilter.isDeterministic() && !(pageFilter instanceof DynamicFilter)) {
                         return new DictionaryAwarePageFilter(pageFilter);
                     }
                     return pageFilter;

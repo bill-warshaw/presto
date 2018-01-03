@@ -83,7 +83,7 @@ public class FeaturesConfig
     private boolean parseDecimalLiteralsAsDouble = true;
 
     private Duration iterativeOptimizerTimeout = new Duration(3, MINUTES); // by default let optimizer wait a long time in case it retrieves some data from ConnectorMetadata
-    private boolean dynamicPartitionPruningEnabled = false;
+    private boolean dynamicPartitionPruningEnabled;
 
     private DataSize filterAndProjectMinOutputPageSize = new DataSize(25, KILOBYTE);
     private int filterAndProjectMinOutputPageRowCount = 256;
