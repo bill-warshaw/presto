@@ -237,8 +237,14 @@ public class BaseJdbcClient
     @Override
     public ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle)
     {
+        return new FixedSplitSource(ImmutableList.of(getSplit(layoutHandle)));
+    }
+
+    @Override
+    public JdbcSplit getSplit(JdbcTableLayoutHandle layoutHandle)
+    {
         JdbcTableHandle tableHandle = layoutHandle.getTable();
-        JdbcSplit jdbcSplit = new JdbcSplit(
+        return new JdbcSplit(
                 connectorId,
                 tableHandle.getCatalogName(),
                 tableHandle.getSchemaName(),
@@ -246,7 +252,6 @@ public class BaseJdbcClient
                 connectionUrl,
                 fromProperties(connectionProperties),
                 layoutHandle.getTupleDomain());
-        return new FixedSplitSource(ImmutableList.of(jdbcSplit));
     }
 
     @Override
@@ -439,6 +444,34 @@ public class BaseJdbcClient
             throws SQLException
     {
         return connection.prepareStatement(sql);
+    }
+
+    @Override
+    public List<String> getPrimaryKeysForTable(JdbcTableHandle handle)
+    {
+        try (Connection connection = driver.connect(connectionUrl, connectionProperties)) {
+            DatabaseMetaData metadata = connection.getMetaData();
+            String jdbcCatalogName = handle.getCatalogName();
+            String jdbcSchemaName = handle.getSchemaName();
+            String jdbcTableName = handle.getTableName();
+            if (metadata.storesUpperCaseIdentifiers()) {
+                jdbcCatalogName = jdbcCatalogName.toUpperCase(ENGLISH);
+                jdbcSchemaName = jdbcSchemaName.toUpperCase(ENGLISH);
+                jdbcTableName = jdbcTableName.toUpperCase(ENGLISH);
+            }
+            try (ResultSet rs = metadata.getPrimaryKeys(jdbcCatalogName, jdbcSchemaName, jdbcTableName)) {
+                List<String> pks = new ArrayList<>();
+                while (rs.next()) {
+                    pks.add(rs.getString("COLUMN_NAME"));
+                    // one values = single PK
+                    // multiple values = composite PK
+                }
+                return pks;
+            }
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
     }
 
     protected ResultSet getTables(Connection connection, String schemaName, String tableName)

@@ -63,4 +63,8 @@ public interface JdbcClient
 
     PreparedStatement getPreparedStatement(Connection connection, String sql)
             throws SQLException;
+
+    List<String> getPrimaryKeysForTable(JdbcTableHandle handle);
+
+    JdbcSplit getSplit(JdbcTableLayoutHandle layoutHandle);
 }

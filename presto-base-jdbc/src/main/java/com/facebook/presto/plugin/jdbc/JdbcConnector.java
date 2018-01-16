@@ -14,6 +14,7 @@
 package com.facebook.presto.plugin.jdbc;
 
 import com.facebook.presto.spi.connector.Connector;
+import com.facebook.presto.spi.connector.ConnectorIndexProvider;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.connector.ConnectorRecordSinkProvider;
@@ -43,6 +44,7 @@ public class JdbcConnector
     private final JdbcSplitManager jdbcSplitManager;
     private final JdbcRecordSetProvider jdbcRecordSetProvider;
     private final JdbcRecordSinkProvider jdbcRecordSinkProvider;
+    private final JdbcConnectorIndexProvider jdbcConnectorIndexProvider;
 
     private final ConcurrentMap<ConnectorTransactionHandle, JdbcMetadata> transactions = new ConcurrentHashMap<>();
 
@@ -52,13 +54,15 @@ public class JdbcConnector
             JdbcMetadataFactory jdbcMetadataFactory,
             JdbcSplitManager jdbcSplitManager,
             JdbcRecordSetProvider jdbcRecordSetProvider,
-            JdbcRecordSinkProvider jdbcRecordSinkProvider)
+            JdbcRecordSinkProvider jdbcRecordSinkProvider,
+            JdbcConnectorIndexProvider jdbcConnectorIndexProvider)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.jdbcMetadataFactory = requireNonNull(jdbcMetadataFactory, "jdbcMetadataFactory is null");
         this.jdbcSplitManager = requireNonNull(jdbcSplitManager, "jdbcSplitManager is null");
         this.jdbcRecordSetProvider = requireNonNull(jdbcRecordSetProvider, "jdbcRecordSetProvider is null");
         this.jdbcRecordSinkProvider = requireNonNull(jdbcRecordSinkProvider, "jdbcRecordSinkProvider is null");
+        this.jdbcConnectorIndexProvider = requireNonNull(jdbcConnectorIndexProvider, "jdbcConnectorIndexProvider is null");
     }
 
     @Override
@@ -114,6 +118,12 @@ public class JdbcConnector
     public ConnectorRecordSinkProvider getRecordSinkProvider()
     {
         return jdbcRecordSinkProvider;
+    }
+
+    @Override
+    public ConnectorIndexProvider getIndexProvider()
+    {
+        return jdbcConnectorIndexProvider;
     }
 
     @Override

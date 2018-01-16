@@ -18,6 +18,7 @@ import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
+import com.facebook.presto.spi.ConnectorResolvedIndex;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableLayout;
@@ -31,8 +32,11 @@ import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
+import com.facebook.presto.spi.predicate.NullableValue;
+import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 
 import java.util.Collection;
@@ -41,14 +45,18 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.spi.StandardErrorCode.PERMISSION_DENIED;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toSet;
 
 public class JdbcMetadata
         implements ConnectorMetadata
 {
+    private static final Logger log = Logger.get(JdbcMetadata.class);
+
     private final JdbcClient jdbcClient;
     private final boolean allowDropTable;
 
@@ -202,5 +210,41 @@ public class JdbcMetadata
         JdbcOutputTableHandle jdbcInsertHandle = (JdbcOutputTableHandle) tableHandle;
         jdbcClient.finishInsertTable(jdbcInsertHandle);
         return Optional.empty();
+    }
+
+    @Override
+    public Optional<ConnectorResolvedIndex> resolveIndex(ConnectorSession session, ConnectorTableHandle tableHandle, Set<ColumnHandle> indexableColumns, Set<ColumnHandle> outputColumns, TupleDomain<ColumnHandle> tupleDomain)
+    {
+        JdbcTableHandle jdbcTableHandle = (JdbcTableHandle) tableHandle;
+        Set<String> indexableColumnNames = indexableColumns.stream().map(ch -> ((JdbcColumnHandle) ch).getColumnName()).collect(toSet());
+        Set<String> outputColumnNamesLogging = outputColumns.stream().map(ch -> ((JdbcColumnHandle) ch).getColumnName()).collect(toSet());
+        if (indexableColumns.equals(outputColumns)) {
+            log.warn("Seeking index on %s for %s doesn't make sense", indexableColumnNames, outputColumnNamesLogging);
+            return Optional.empty();
+        }
+        long start = System.currentTimeMillis();
+        final List<String> pks = jdbcClient.getPrimaryKeysForTable(jdbcTableHandle);
+        log.warn("finding PKs for %s took %s", tableHandle, System.currentTimeMillis() - start);
+
+        if (indexableColumnNames.containsAll(pks)) {
+            String table = jdbcTableHandle.getTableName();
+            Set<String> pkCols = indexableColumnNames.stream().filter(pks::contains).collect(toSet());
+            log.warn("returning index on %s for %s", pkCols, outputColumnNamesLogging);
+
+            // todo what is this doing
+            Map<ColumnHandle, NullableValue> fixedValues = TupleDomain.extractFixedValues(tupleDomain).orElse(ImmutableMap.of())
+                    .entrySet().stream()
+                    .filter(entry -> !indexableColumns.contains(entry.getKey()))
+                    .filter(entry -> !entry.getValue().isNull()) // strip nulls since meaningless in index join lookups
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+
+            // todo anything else around fixedValues?  See TpchIndexMetadata
+            JdbcConnectorIndexHandle jdbcConnectorIndexHandle = new JdbcConnectorIndexHandle(table, pkCols, TupleDomain.fromFixedValues(fixedValues), jdbcTableHandle);
+            return Optional.of(new ConnectorResolvedIndex(jdbcConnectorIndexHandle, tupleDomain));
+        }
+        else {
+            log.warn("No index on %s for %s", indexableColumnNames, outputColumnNamesLogging);
+            return Optional.empty();
+        }
     }
 }
