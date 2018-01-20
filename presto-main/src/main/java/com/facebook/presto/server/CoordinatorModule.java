@@ -118,6 +118,7 @@ import com.google.inject.Scopes;
 import com.google.inject.TypeLiteral;
 import com.google.inject.multibindings.MapBinder;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
+import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 
 import javax.annotation.PreDestroy;
@@ -219,6 +220,7 @@ public class CoordinatorModule
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                     config.setMaxConnectionsPerServer(250);
+                    config.setMaxContentLength(new DataSize(32, DataSize.Unit.MEGABYTE));
                 });
 
         binder.bind(ScheduledExecutorService.class).annotatedWith(ForScheduler.class)

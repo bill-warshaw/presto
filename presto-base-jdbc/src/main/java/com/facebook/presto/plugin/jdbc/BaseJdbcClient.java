@@ -16,7 +16,7 @@ package com.facebook.presto.plugin.jdbc;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableMetadata;
-import com.facebook.presto.spi.FixedSplitSource;
+import com.facebook.presto.spi.DynamicFilterDescription;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
@@ -45,6 +45,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 
 import static com.facebook.presto.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
@@ -200,7 +203,7 @@ public class BaseJdbcClient
                             resultSet.getInt("DECIMAL_DIGITS"));
                     // skip unsupported column types
                     if (columnType != null) {
-                        String columnName = resultSet.getString("COLUMN_NAME");
+                        String columnName = resultSet.getString("COLUMN_NAME");//
                         columns.add(new JdbcColumnHandle(connectorId, columnName, columnType));
                     }
                 }
@@ -226,7 +229,31 @@ public class BaseJdbcClient
                 tableHandle.getSchemaName(),
                 tableHandle.getTableName(),
                 layoutHandle.getTupleDomain());
-        return new FixedSplitSource(ImmutableList.of(jdbcSplit));
+        return new JdbcSplitSource(jdbcSplit, new ArrayList<>());
+    }
+
+    @Override
+    public ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle, List<Future<DynamicFilterDescription>> dynamicFilters)
+    {
+        JdbcTableHandle tableHandle = layoutHandle.getTable();
+        JdbcSplit jdbcSplit = new JdbcSplit(
+                connectorId,
+                tableHandle.getCatalogName(),
+                tableHandle.getSchemaName(),
+                tableHandle.getTableName(),
+                layoutHandle.getTupleDomain());
+        List<CompletableFuture<DynamicFilterDescription>> completableFutures = new ArrayList<>();
+        for (Future<DynamicFilterDescription> f : dynamicFilters) {
+            completableFutures.add(CompletableFuture.supplyAsync(() -> {
+                try {
+                    return f.get();
+                }
+                catch (InterruptedException | ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            }));
+        }
+        return new JdbcSplitSource(jdbcSplit, completableFutures);
     }
 
     @Override

@@ -15,6 +15,7 @@ package com.facebook.presto.plugin.jdbc;
 
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableMetadata;
+import com.facebook.presto.spi.DynamicFilterDescription;
 import com.facebook.presto.spi.SchemaTableName;
 
 import javax.annotation.Nullable;
@@ -24,6 +25,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Future;
 
 public interface JdbcClient
 {
@@ -37,6 +39,8 @@ public interface JdbcClient
     List<JdbcColumnHandle> getColumns(JdbcTableHandle tableHandle);
 
     ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle);
+
+    ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle, List<Future<DynamicFilterDescription>> dynamicFilters);
 
     Connection getConnection(JdbcSplit split)
             throws SQLException;

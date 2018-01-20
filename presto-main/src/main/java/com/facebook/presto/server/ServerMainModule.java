@@ -372,6 +372,7 @@ public class ServerMainModule
                 .withConfigDefaults(config -> {
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
+                    config.setMaxContentLength(new DataSize(32, MEGABYTE));
                 });
 
         // memory manager

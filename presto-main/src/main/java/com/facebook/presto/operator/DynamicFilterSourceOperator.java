@@ -22,6 +22,7 @@ import com.facebook.presto.spi.type.TypeUtils;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.log.Logger;
 
 import java.util.List;
 
@@ -33,6 +34,8 @@ import static java.util.Objects.requireNonNull;
 public class DynamicFilterSourceOperator
         implements Operator
 {
+    private static final Logger log = Logger.get(DynamicFilterSourceOperator.class);
+
     public static class DynamicFilterSourceOperatorFactory
             implements OperatorFactory
     {
@@ -100,8 +103,8 @@ public class DynamicFilterSourceOperator
         }
     }
 
-    private static final int DEFAULT_POSITIONS_LIMIT = 1000;
-    private static final long DEFAULT_SIZE_LIMIT = 100000L;
+    private static final int DEFAULT_POSITIONS_LIMIT = 50000;
+    private static final long DEFAULT_SIZE_LIMIT = 1000000L;
 
     private final OperatorContext operatorContext;
     private final List<Type> types;
@@ -224,6 +227,7 @@ public class DynamicFilterSourceOperator
     {
         // we don't want to filter if there're too many values
         if (positionCount > positionsLimit || valueSize > DEFAULT_SIZE_LIMIT) {
+            log.warn("too much data for dyn filter.  [positionCount - %s, valueSize - %s]", positionCount, valueSize);
             client.storeSummary(new DynamicFilterSummary(TupleDomain.all()));
             return;
         }
