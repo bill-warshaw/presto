@@ -19,6 +19,8 @@ import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.StoredProcedureInfo;
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.type.CharType;
 import com.facebook.presto.spi.type.DecimalType;
@@ -43,6 +45,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -101,13 +104,20 @@ public class BaseJdbcClient
     protected final String connectorId;
     protected final ConnectionFactory connectionFactory;
     protected final String identifierQuote;
+    private final Optional<StoredProcedureManager> storedProcedureManager;
 
     public BaseJdbcClient(JdbcConnectorId connectorId, BaseJdbcConfig config, String identifierQuote, ConnectionFactory connectionFactory)
+    {
+        this(connectorId, config, identifierQuote, connectionFactory, null);
+    }
+
+    public BaseJdbcClient(JdbcConnectorId connectorId, BaseJdbcConfig config, String identifierQuote, ConnectionFactory connectionFactory, StoredProcedureManager storedProcedureManager)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null").toString();
         requireNonNull(config, "config is null"); // currently unused, retained as parameter for future extensions
         this.identifierQuote = requireNonNull(identifierQuote, "identifierQuote is null");
         this.connectionFactory = requireNonNull(connectionFactory, "connectionFactory is null");
+        this.storedProcedureManager = Optional.ofNullable(storedProcedureManager);
     }
 
     @Override
@@ -143,6 +153,11 @@ public class BaseJdbcClient
                 while (resultSet.next()) {
                     list.add(getSchemaTableName(resultSet));
                 }
+                //todo bill hack!!! figure out schema
+                if (storedProcedureManager.isPresent()) {
+                    final String finalSchema = schema;
+                    storedProcedureManager.get().getAll().stream().forEach(it -> list.add(new SchemaTableName(finalSchema, it.getName())));
+                }
                 return list.build();
             }
         }
@@ -155,6 +170,9 @@ public class BaseJdbcClient
     @Override
     public JdbcTableHandle getTableHandle(SchemaTableName schemaTableName)
     {
+        if (storedProcedureManager.isPresent() && storedProcedureManager.get().get(schemaTableName.getTableName()) != null) {
+            return new JdbcTableHandle(connectorId, schemaTableName, connectorId, schemaTableName.getSchemaName(), schemaTableName.getTableName());
+        }
         try (Connection connection = connectionFactory.openConnection()) {
             DatabaseMetaData metadata = connection.getMetaData();
             String jdbcSchemaName = schemaTableName.getSchemaName();
@@ -190,6 +208,14 @@ public class BaseJdbcClient
     @Override
     public List<JdbcColumnHandle> getColumns(JdbcTableHandle tableHandle)
     {
+        if (storedProcedureManager.isPresent() && storedProcedureManager.get().get(tableHandle.getTableName()) != null) {
+            StoredProcedureInfo storedProcedure = storedProcedureManager.get().get(tableHandle.getTableName());
+            List<JdbcColumnHandle> storedProcColumns = new ArrayList<>();
+            for (int i = 0; i < storedProcedure.getOutputColumnNames().size(); i++) {
+                storedProcColumns.add(new JdbcColumnHandle(connectorId, storedProcedure.getOutputColumnNames().get(i), storedProcedure.getOutputColumnTypes().get(i)));
+            }
+            return storedProcColumns;
+        }
         try (Connection connection = connectionFactory.openConnection()) {
             try (ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
                 List<JdbcColumnHandle> columns = new ArrayList<>();
@@ -248,6 +274,9 @@ public class BaseJdbcClient
     public PreparedStatement buildSql(Connection connection, JdbcSplit split, List<JdbcColumnHandle> columnHandles)
             throws SQLException
     {
+        if (storedProcedureManager.isPresent() && storedProcedureManager.get().get(split.getTableName()) != null) {
+            return getPreparedStatement(connection, storedProcedureManager.get().get(split.getTableName()).getNativeQuery());
+        }
         return new QueryBuilder(identifierQuote).buildSql(
                 this,
                 connection,

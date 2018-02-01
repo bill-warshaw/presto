@@ -86,6 +86,7 @@ import com.facebook.presto.operator.index.IndexJoinLookupStats;
 import com.facebook.presto.operator.project.InterpretedPageProjection;
 import com.facebook.presto.operator.project.PageProcessor;
 import com.facebook.presto.operator.project.PageProjection;
+import com.facebook.presto.server.StoredProcedureManagerServerImpl;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorPageSource;
@@ -93,6 +94,7 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PageSorter;
 import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spi.connector.ConnectorFactory;
 import com.facebook.presto.spi.type.Type;
@@ -242,6 +244,7 @@ public class LocalQueryRunner
     private final boolean alwaysRevokeMemory;
     private final NodeSpillConfig nodeSpillConfig;
     private boolean printPlan;
+    private final StoredProcedureManager storedProcedureManager;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
@@ -325,6 +328,7 @@ public class LocalQueryRunner
         this.pageFunctionCompiler = new PageFunctionCompiler(metadata, 0);
         this.expressionCompiler = new ExpressionCompiler(metadata, pageFunctionCompiler);
         this.joinFilterFunctionCompiler = new JoinFilterFunctionCompiler(metadata);
+        this.storedProcedureManager = new StoredProcedureManagerServerImpl();
 
         this.connectorManager = new ConnectorManager(
                 metadata,
@@ -341,7 +345,8 @@ public class LocalQueryRunner
                 typeRegistry,
                 pageSorter,
                 pageIndexerFactory,
-                transactionManager);
+                transactionManager,
+                storedProcedureManager);
 
         GlobalSystemConnectorFactory globalSystemConnectorFactory = new GlobalSystemConnectorFactory(ImmutableSet.of(
                 new NodeSystemTable(nodeManager),

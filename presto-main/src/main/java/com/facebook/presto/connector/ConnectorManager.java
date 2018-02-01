@@ -24,6 +24,7 @@ import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.security.AccessControlManager;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PageSorter;
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.connector.Connector;
@@ -91,6 +92,7 @@ public class ConnectorManager
     private final PageIndexerFactory pageIndexerFactory;
     private final NodeInfo nodeInfo;
     private final TransactionManager transactionManager;
+    private final StoredProcedureManager storedProcedureManager;
 
     @GuardedBy("this")
     private final ConcurrentMap<String, ConnectorFactory> connectorFactories = new ConcurrentHashMap<>();
@@ -116,7 +118,8 @@ public class ConnectorManager
             TypeManager typeManager,
             PageSorter pageSorter,
             PageIndexerFactory pageIndexerFactory,
-            TransactionManager transactionManager)
+            TransactionManager transactionManager,
+            StoredProcedureManager storedProcedureManager)
     {
         this.metadataManager = metadataManager;
         this.catalogManager = catalogManager;
@@ -133,6 +136,7 @@ public class ConnectorManager
         this.pageIndexerFactory = pageIndexerFactory;
         this.nodeInfo = nodeInfo;
         this.transactionManager = transactionManager;
+        this.storedProcedureManager = storedProcedureManager;
     }
 
     @PreDestroy
@@ -297,7 +301,8 @@ public class ConnectorManager
                 new ConnectorAwareNodeManager(nodeManager, nodeInfo.getEnvironment(), connectorId),
                 typeManager,
                 pageSorter,
-                pageIndexerFactory);
+                pageIndexerFactory,
+                storedProcedureManager);
 
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
             return factory.create(connectorId.getCatalogName(), properties, context);

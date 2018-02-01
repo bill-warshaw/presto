@@ -69,6 +69,7 @@ import com.facebook.presto.memory.TotalReservationOnBlockedNodesLowMemoryKiller;
 import com.facebook.presto.operator.ForScheduler;
 import com.facebook.presto.server.protocol.StatementResource;
 import com.facebook.presto.server.remotetask.RemoteTaskStats;
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.memory.ClusterMemoryPoolManager;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.analyzer.QueryExplainer;
@@ -166,11 +167,13 @@ public class CoordinatorModule
 
         // query manager
         jaxrsBinder(binder).bind(QueryResource.class);
+        jaxrsBinder(binder).bind(StoredProcedureResource.class);
         jaxrsBinder(binder).bind(StageResource.class);
         jaxrsBinder(binder).bind(QueryStateInfoResource.class);
         jaxrsBinder(binder).bind(ResourceGroupStateInfoResource.class);
         binder.bind(QueryIdGenerator.class).in(Scopes.SINGLETON);
         binder.bind(QueryManager.class).to(SqlQueryManager.class).in(Scopes.SINGLETON);
+        binder.bind(StoredProcedureManager.class).to(StoredProcedureManagerServerImpl.class).in(Scopes.SINGLETON);
         binder.bind(SessionSupplier.class).to(QuerySessionSupplier.class).in(Scopes.SINGLETON);
         binder.bind(InternalResourceGroupManager.class).in(Scopes.SINGLETON);
         newExporter(binder).export(InternalResourceGroupManager.class).withGeneratedName();
@@ -184,6 +187,7 @@ public class CoordinatorModule
             binder.bind(new TypeLiteral<List<QueryQueueRule>>() {}).toProvider(QueryQueueRuleFactory.class).in(Scopes.SINGLETON);
         }
         newExporter(binder).export(QueryManager.class).withGeneratedName();
+        newExporter(binder).export(StoredProcedureManager.class).withGeneratedName();
 
         // cluster memory manager
         binder.bind(ClusterMemoryManager.class).in(Scopes.SINGLETON);

@@ -20,6 +20,7 @@ import com.facebook.presto.plugin.jdbc.DriverConnectionFactory;
 import com.facebook.presto.plugin.jdbc.JdbcConnectorId;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableSet;
@@ -50,10 +51,10 @@ public class MySqlClient
         extends BaseJdbcClient
 {
     @Inject
-    public MySqlClient(JdbcConnectorId connectorId, BaseJdbcConfig config, MySqlConfig mySqlConfig)
+    public MySqlClient(JdbcConnectorId connectorId, BaseJdbcConfig config, MySqlConfig mySqlConfig, StoredProcedureManager storedProcedureManager)
             throws SQLException
     {
-        super(connectorId, config, "`", connectionFactory(config, mySqlConfig));
+        super(connectorId, config, "`", connectionFactory(config, mySqlConfig), storedProcedureManager);
     }
 
     private static ConnectionFactory connectionFactory(BaseJdbcConfig config, MySqlConfig mySqlConfig)

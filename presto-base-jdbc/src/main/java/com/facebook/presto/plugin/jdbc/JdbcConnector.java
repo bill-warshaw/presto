@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
@@ -43,6 +44,7 @@ public class JdbcConnector
     private final JdbcSplitManager jdbcSplitManager;
     private final JdbcRecordSetProvider jdbcRecordSetProvider;
     private final JdbcPageSinkProvider jdbcPageSinkProvider;
+    private final StoredProcedureManager storedProcedureManager;
 
     private final ConcurrentMap<ConnectorTransactionHandle, JdbcMetadata> transactions = new ConcurrentHashMap<>();
 
@@ -52,13 +54,15 @@ public class JdbcConnector
             JdbcMetadataFactory jdbcMetadataFactory,
             JdbcSplitManager jdbcSplitManager,
             JdbcRecordSetProvider jdbcRecordSetProvider,
-            JdbcPageSinkProvider jdbcPageSinkProvider)
+            JdbcPageSinkProvider jdbcPageSinkProvider,
+            StoredProcedureManager storedProcedureManager)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.jdbcMetadataFactory = requireNonNull(jdbcMetadataFactory, "jdbcMetadataFactory is null");
         this.jdbcSplitManager = requireNonNull(jdbcSplitManager, "jdbcSplitManager is null");
         this.jdbcRecordSetProvider = requireNonNull(jdbcRecordSetProvider, "jdbcRecordSetProvider is null");
         this.jdbcPageSinkProvider = requireNonNull(jdbcPageSinkProvider, "jdbcPageSinkProvider is null");
+        this.storedProcedureManager = requireNonNull(storedProcedureManager, "storedProcedureManager is null");
     }
 
     @Override

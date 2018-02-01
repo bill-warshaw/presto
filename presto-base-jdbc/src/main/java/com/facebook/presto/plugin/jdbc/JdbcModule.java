@@ -13,9 +13,12 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.spi.StoredProcedureManager;
 import com.google.inject.Binder;
 import com.google.inject.Module;
+import com.google.inject.Provides;
 import com.google.inject.Scopes;
+import com.google.inject.Singleton;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static java.util.Objects.requireNonNull;
@@ -24,10 +27,12 @@ public class JdbcModule
         implements Module
 {
     private final String connectorId;
+    private StoredProcedureManager storedProcedureManager;
 
-    public JdbcModule(String connectorId)
+    public JdbcModule(String connectorId, StoredProcedureManager storedProcedureManager)
     {
         this.connectorId = requireNonNull(connectorId, "connector id is null");
+        this.storedProcedureManager = storedProcedureManager;
     }
 
     @Override
@@ -40,5 +45,12 @@ public class JdbcModule
         binder.bind(JdbcPageSinkProvider.class).in(Scopes.SINGLETON);
         binder.bind(JdbcConnector.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(JdbcMetadataConfig.class);
+    }
+
+    @Provides
+    @Singleton
+    public StoredProcedureManager getStoredProcedureManager()
+    {
+        return storedProcedureManager;
     }
 }
