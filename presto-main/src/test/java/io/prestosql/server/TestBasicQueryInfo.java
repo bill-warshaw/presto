@@ -51,6 +51,7 @@ public class TestBasicQueryInfo
                         URI.create("1"),
                         ImmutableList.of("2", "3"),
                         "SELECT 4",
+                        Optional.empty(),
                         new QueryStats(
                                 DateTime.parse("1991-09-06T05:00-05:30"),
                                 DateTime.parse("1991-09-06T05:01-05:30"),
@@ -59,10 +60,10 @@ public class TestBasicQueryInfo
                                 Duration.valueOf("8m"),
                                 Duration.valueOf("7m"),
                                 Duration.valueOf("34m"),
+                                Duration.valueOf("35m"),
                                 Duration.valueOf("44m"),
                                 Duration.valueOf("9m"),
-                                Duration.valueOf("10m"),
-                                Duration.valueOf("11m"),
+                                Duration.valueOf("99s"),
                                 Duration.valueOf("12m"),
                                 13,
                                 14,
@@ -90,6 +91,7 @@ public class TestBasicQueryInfo
                                 ImmutableSet.of(BlockedReason.WAITING_FOR_MEMORY),
                                 DataSize.valueOf("271GB"),
                                 281,
+                                Duration.valueOf("20m"),
                                 DataSize.valueOf("272GB"),
                                 282,
                                 DataSize.valueOf("27GB"),
@@ -125,6 +127,8 @@ public class TestBasicQueryInfo
                         ImmutableList.of(),
                         ImmutableSet.of(),
                         Optional.empty(),
+                        ImmutableList.of(),
+                        ImmutableList.of(),
                         false,
                         Optional.empty()));
 

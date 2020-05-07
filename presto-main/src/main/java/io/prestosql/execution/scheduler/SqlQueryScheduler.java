@@ -83,7 +83,6 @@ import static io.airlift.concurrent.MoreFutures.whenAnyComplete;
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.prestosql.SystemSessionProperties.getConcurrentLifespansPerNode;
 import static io.prestosql.SystemSessionProperties.getWriterMinSize;
-import static io.prestosql.SystemSessionProperties.isDynamicSchduleForGroupedExecution;
 import static io.prestosql.connector.CatalogName.isInternalSystemConnector;
 import static io.prestosql.execution.BasicStageStats.aggregateBasicStageStats;
 import static io.prestosql.execution.SqlStageExecution.createSqlStageExecution;
@@ -100,6 +99,7 @@ import static io.prestosql.spi.connector.NotPartitionedPartitionHandle.NOT_PARTI
 import static io.prestosql.sql.planner.SystemPartitioningHandle.FIXED_BROADCAST_DISTRIBUTION;
 import static io.prestosql.sql.planner.SystemPartitioningHandle.SCALED_WRITER_DISTRIBUTION;
 import static io.prestosql.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
+import static io.prestosql.sql.planner.plan.ExchangeNode.Type.REPLICATE;
 import static io.prestosql.util.Failures.checkCondition;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -195,7 +195,6 @@ public class SqlQueryScheduler
         List<SqlStageExecution> stages = createStages(
                 (fragmentId, tasks, noMoreExchangeLocations) -> updateQueryOutputLocations(queryStateMachine, rootBufferId, tasks, noMoreExchangeLocations),
                 new AtomicInteger(),
-                locationFactory,
                 plan.withBucketToPartition(Optional.of(new int[1])),
                 nodeScheduler,
                 remoteTaskFactory,
@@ -281,7 +280,6 @@ public class SqlQueryScheduler
     private List<SqlStageExecution> createStages(
             ExchangeLocationsConsumer parent,
             AtomicInteger nextStageId,
-            LocationFactory locationFactory,
             StageExecutionPlan plan,
             NodeScheduler nodeScheduler,
             RemoteTaskFactory remoteTaskFactory,
@@ -301,8 +299,8 @@ public class SqlQueryScheduler
         StageId stageId = new StageId(queryStateMachine.getQueryId(), nextStageId.getAndIncrement());
         SqlStageExecution stage = createSqlStageExecution(
                 stageId,
-                locationFactory.createStageLocation(stageId),
                 plan.getFragment(),
+                plan.getTables(),
                 remoteTaskFactory,
                 session,
                 summarizeTaskInfo,
@@ -320,10 +318,8 @@ public class SqlQueryScheduler
             Entry<PlanNodeId, SplitSource> entry = Iterables.getOnlyElement(plan.getSplitSources().entrySet());
             PlanNodeId planNodeId = entry.getKey();
             SplitSource splitSource = entry.getValue();
-            CatalogName catalogName = splitSource.getCatalogName();
-            if (isInternalSystemConnector(catalogName)) {
-                catalogName = null;
-            }
+            Optional<CatalogName> catalogName = Optional.of(splitSource.getCatalogName())
+                    .filter(catalog -> !isInternalSystemConnector(catalog));
             NodeSelector nodeSelector = nodeScheduler.createNodeSelector(catalogName);
             SplitPlacementPolicy placementPolicy = new DynamicSplitPlacementPolicy(nodeSelector, stage::getAllTasks);
 
@@ -339,7 +335,8 @@ public class SqlQueryScheduler
             if (!splitSources.isEmpty()) {
                 // contains local source
                 List<PlanNodeId> schedulingOrder = plan.getFragment().getPartitionedSources();
-                CatalogName catalogName = partitioningHandle.getConnectorId().orElseThrow(IllegalStateException::new);
+                Optional<CatalogName> catalogName = partitioningHandle.getConnectorId();
+                catalogName.orElseThrow(() -> new IllegalArgumentException("No connector ID for partitioning handle: " + partitioningHandle));
                 List<ConnectorPartitionHandle> connectorPartitionHandles;
                 boolean groupedExecutionForStage = plan.getFragment().getStageExecutionDescriptor().isStageGroupedExecution();
                 if (groupedExecutionForStage) {
@@ -352,19 +349,22 @@ public class SqlQueryScheduler
 
                 BucketNodeMap bucketNodeMap;
                 List<InternalNode> stageNodeList;
-                if (plan.getSubStages().isEmpty()) {
+                if (plan.getFragment().getRemoteSourceNodes().stream().allMatch(node -> node.getExchangeType() == REPLICATE)) {
                     // no remote source
-                    boolean preferDynamic = groupedExecutionForStage && isDynamicSchduleForGroupedExecution(session);
-                    bucketNodeMap = nodePartitioningManager.getBucketNodeMap(session, partitioningHandle, preferDynamic);
-                    if (bucketNodeMap.isDynamic()) {
-                        verify(preferDynamic);
-                    }
+                    boolean dynamicLifespanSchedule = plan.getFragment().getStageExecutionDescriptor().isDynamicLifespanSchedule();
+                    bucketNodeMap = nodePartitioningManager.getBucketNodeMap(session, partitioningHandle, dynamicLifespanSchedule);
+
+                    // verify execution is consistent with planner's decision on dynamic lifespan schedule
+                    verify(bucketNodeMap.isDynamic() == dynamicLifespanSchedule);
 
                     stageNodeList = new ArrayList<>(nodeScheduler.createNodeSelector(catalogName).allNodes());
                     Collections.shuffle(stageNodeList);
                     bucketToPartition = Optional.empty();
                 }
                 else {
+                    // cannot use dynamic lifespan schedule
+                    verify(!plan.getFragment().getStageExecutionDescriptor().isDynamicLifespanSchedule());
+
                     // remote source requires nodePartitionMap
                     NodePartitionMap nodePartitionMap = partitioningCache.apply(plan.getFragment().getPartitioning());
                     if (groupedExecutionForStage) {
@@ -403,7 +403,6 @@ public class SqlQueryScheduler
             List<SqlStageExecution> subTree = createStages(
                     stage::addExchangeLocations,
                     nextStageId,
-                    locationFactory,
                     subStagePlan.withBucketToPartition(bucketToPartition),
                     nodeScheduler,
                     remoteTaskFactory,
@@ -446,7 +445,7 @@ public class SqlQueryScheduler
                     stage,
                     sourceTasksProvider,
                     writerTasksProvider,
-                    nodeScheduler.createNodeSelector(null),
+                    nodeScheduler.createNodeSelector(Optional.empty()),
                     schedulerExecutor,
                     getWriterMinSize(session));
             whenAllStages(childStages, StageState::isDone)
@@ -488,12 +487,12 @@ public class SqlQueryScheduler
         return new StageInfo(
                 parent.getStageId(),
                 parent.getState(),
-                parent.getSelf(),
                 parent.getPlan(),
                 parent.getTypes(),
                 parent.getStageStats(),
                 parent.getTasks(),
                 childStages,
+                parent.getTables(),
                 parent.getFailureCause());
     }
 
@@ -625,7 +624,7 @@ public class SqlQueryScheduler
     {
         try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             SqlStageExecution sqlStageExecution = stages.get(stageId);
-            SqlStageExecution stage = requireNonNull(sqlStageExecution, () -> format("Stage %s does not exist", stageId));
+            SqlStageExecution stage = requireNonNull(sqlStageExecution, () -> format("Stage '%s' does not exist", stageId));
             stage.cancel();
         }
     }

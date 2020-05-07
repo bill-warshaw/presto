@@ -22,6 +22,7 @@ import io.airlift.units.Duration;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.metadata.SessionPropertyManager;
 import io.prestosql.security.AccessControl;
+import io.prestosql.security.SecurityContext;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.QueryId;
 import io.prestosql.spi.connector.ConnectorSession;
@@ -47,8 +48,8 @@ import java.util.stream.Collectors;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static io.prestosql.connector.CatalogName.createInformationSchemaConnectorId;
-import static io.prestosql.connector.CatalogName.createSystemTablesConnectorId;
+import static io.prestosql.connector.CatalogName.createInformationSchemaCatalogName;
+import static io.prestosql.connector.CatalogName.createSystemTablesCatalogName;
 import static io.prestosql.spi.StandardErrorCode.NOT_FOUND;
 import static io.prestosql.util.Failures.checkCondition;
 import static java.util.Objects.requireNonNull;
@@ -234,9 +235,9 @@ public final class Session
     }
 
     public TransactionId getRequiredTransactionId()
+            throws NotInTransactionException
     {
-        checkState(transactionId.isPresent(), "Not in a transaction");
-        return transactionId.get();
+        return transactionId.orElseThrow(NotInTransactionException::new);
     }
 
     public boolean isClientTransactionSupport()
@@ -309,40 +310,40 @@ public final class Session
             if (catalogProperties.isEmpty()) {
                 continue;
             }
-            CatalogName connectorId = transactionManager.getOptionalCatalogMetadata(transactionId, catalogName)
+            CatalogName catalog = transactionManager.getOptionalCatalogMetadata(transactionId, catalogName)
                     .orElseThrow(() -> new PrestoException(NOT_FOUND, "Session property catalog does not exist: " + catalogName))
                     .getCatalogName();
 
             for (Entry<String, String> property : catalogProperties.entrySet()) {
                 // verify permissions
-                accessControl.checkCanSetCatalogSessionProperty(transactionId, identity, catalogName, property.getKey());
+                accessControl.checkCanSetCatalogSessionProperty(new SecurityContext(transactionId, identity, queryId), catalogName, property.getKey());
 
                 // validate session property value
-                sessionPropertyManager.validateCatalogSessionProperty(connectorId, catalogName, property.getKey(), property.getValue());
+                sessionPropertyManager.validateCatalogSessionProperty(catalog, catalogName, property.getKey(), property.getValue());
             }
-            connectorProperties.put(connectorId, catalogProperties);
+            connectorProperties.put(catalog, catalogProperties);
         }
 
         ImmutableMap.Builder<String, SelectedRole> roles = ImmutableMap.builder();
         for (Entry<String, SelectedRole> entry : identity.getRoles().entrySet()) {
             String catalogName = entry.getKey();
             SelectedRole role = entry.getValue();
-            CatalogName connectorId = transactionManager.getOptionalCatalogMetadata(transactionId, catalogName)
-                    .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog does not exist: " + catalogName))
+            CatalogName catalog = transactionManager.getOptionalCatalogMetadata(transactionId, catalogName)
+                    .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog for role does not exist: " + catalogName))
                     .getCatalogName();
             if (role.getType() == SelectedRole.Type.ROLE) {
-                accessControl.checkCanSetRole(transactionId, identity, role.getRole().get(), catalogName);
+                accessControl.checkCanSetRole(new SecurityContext(transactionId, identity, queryId), role.getRole().get(), catalogName);
             }
-            roles.put(connectorId.getCatalogName(), role);
+            roles.put(catalog.getCatalogName(), role);
 
-            String informationSchemaCatalogName = createInformationSchemaConnectorId(connectorId).getCatalogName();
+            String informationSchemaCatalogName = createInformationSchemaCatalogName(catalog).getCatalogName();
             if (transactionManager.getCatalogNames(transactionId).containsKey(informationSchemaCatalogName)) {
-                roles.put(createInformationSchemaConnectorId(connectorId).getCatalogName(), role);
+                roles.put(informationSchemaCatalogName, role);
             }
 
-            String systemTablesCatalogName = createSystemTablesConnectorId(connectorId).getCatalogName();
+            String systemTablesCatalogName = createSystemTablesCatalogName(catalog).getCatalogName();
             if (transactionManager.getCatalogNames(transactionId).containsKey(systemTablesCatalogName)) {
-                roles.put(createSystemTablesConnectorId(connectorId).getCatalogName(), role);
+                roles.put(systemTablesCatalogName, role);
             }
         }
 
@@ -350,7 +351,9 @@ public final class Session
                 queryId,
                 Optional.of(transactionId),
                 clientTransactionSupport,
-                new Identity(identity.getUser(), identity.getPrincipal(), roles.build(), identity.getExtraCredentials()),
+                Identity.from(identity)
+                        .withRoles(roles.build())
+                        .build(),
                 source,
                 catalog,
                 schema,
@@ -428,9 +431,14 @@ public final class Session
         return new FullConnectorSession(this, identity.toConnectorIdentity());
     }
 
+    public ConnectorSession toConnectorSession(String catalogName)
+    {
+        return toConnectorSession(new CatalogName(catalogName));
+    }
+
     public ConnectorSession toConnectorSession(CatalogName catalogName)
     {
-        requireNonNull(catalogName, "connectorId is null");
+        requireNonNull(catalogName, "catalogName is null");
 
         return new FullConnectorSession(
                 this,
@@ -448,6 +456,7 @@ public final class Session
                 transactionId,
                 clientTransactionSupport,
                 identity.getUser(),
+                identity.getGroups(),
                 identity.getPrincipal().map(Principal::toString),
                 source,
                 catalog,
@@ -505,6 +514,11 @@ public final class Session
     public static SessionBuilder builder(Session session)
     {
         return new SessionBuilder(session);
+    }
+
+    public SecurityContext toSecurityContext()
+    {
+        return new SecurityContext(getRequiredTransactionId(), getIdentity(), queryId);
     }
 
     public static class SessionBuilder
@@ -754,7 +768,10 @@ public final class Session
 
         public ResourceEstimates build()
         {
-            return new ResourceEstimates(executionTime, cpuTime, peakMemory);
+            return new ResourceEstimates(
+                    executionTime.map(Duration::toMillis).map(java.time.Duration::ofMillis),
+                    cpuTime.map(Duration::toMillis).map(java.time.Duration::ofMillis),
+                    peakMemory.map(DataSize::toBytes));
         }
     }
 }

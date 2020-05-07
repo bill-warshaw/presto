@@ -14,20 +14,16 @@
 package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Range;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.iterative.Lookup;
 import io.prestosql.sql.planner.iterative.Rule;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.JoinNode.Type;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.PlanNode;
 
 import static io.prestosql.matching.Capture.newCapture;
-import static io.prestosql.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
-import static io.prestosql.sql.planner.plan.JoinNode.Type.FULL;
+import static io.prestosql.sql.planner.optimizations.QueryCardinalityUtil.isAtMost;
 import static io.prestosql.sql.planner.plan.JoinNode.Type.LEFT;
 import static io.prestosql.sql.planner.plan.JoinNode.Type.RIGHT;
 import static io.prestosql.sql.planner.plan.Patterns.Join.type;
@@ -52,17 +48,18 @@ import static io.prestosql.sql.planner.plan.Patterns.source;
  *       - Limit (present if Join is right or outer)
  *          - right source
  * </pre>
+ * Applies to LimitNode without ties only to avoid optimizer loop.
  */
 public class PushLimitThroughOuterJoin
         implements Rule<LimitNode>
 {
     private static final Capture<JoinNode> CHILD = newCapture();
 
-    private static final Pattern<LimitNode> PATTERN =
-            limit()
+    private static final Pattern<LimitNode> PATTERN = limit()
+                    .matching(limit -> !limit.isWithTies())
                     .with(source().matching(
                             join()
-                                    .with(type().matching(type -> isLeftOrFullOuter(type) || isRightOrFullOuter(type)))
+                                    .with(type().matching(type -> type == LEFT || type == RIGHT))
                                     .capturedAs(CHILD)));
 
     @Override
@@ -78,36 +75,22 @@ public class PushLimitThroughOuterJoin
         PlanNode left = joinNode.getLeft();
         PlanNode right = joinNode.getRight();
 
-        if (isLeftOrFullOuter(joinNode.getType()) && !isLimited(left, context.getLookup(), parent.getCount())) {
-            left = new LimitNode(context.getIdAllocator().getNextId(), left, parent.getCount(), true);
-        }
-
-        if (isRightOrFullOuter(joinNode.getType()) && !isLimited(right, context.getLookup(), parent.getCount())) {
-            right = new LimitNode(context.getIdAllocator().getNextId(), right, parent.getCount(), true);
-        }
-
-        if (joinNode.getLeft() != left || joinNode.getRight() != right) {
+        if (joinNode.getType() == LEFT && !isAtMost(left, context.getLookup(), parent.getCount())) {
             return Result.ofPlanNode(
                     parent.replaceChildren(ImmutableList.of(
-                            joinNode.replaceChildren(ImmutableList.of(left, right)))));
+                            joinNode.replaceChildren(ImmutableList.of(
+                                    new LimitNode(context.getIdAllocator().getNextId(), left, parent.getCount(), true),
+                                    right)))));
+        }
+
+        if (joinNode.getType() == RIGHT && !isAtMost(right, context.getLookup(), parent.getCount())) {
+            return Result.ofPlanNode(
+                    parent.replaceChildren(ImmutableList.of(
+                            joinNode.replaceChildren(ImmutableList.of(
+                                    left,
+                                    new LimitNode(context.getIdAllocator().getNextId(), right, parent.getCount(), true))))));
         }
 
         return Result.empty();
-    }
-
-    private static boolean isLimited(PlanNode node, Lookup lookup, long limit)
-    {
-        Range<Long> cardinality = extractCardinality(node, lookup);
-        return cardinality.hasUpperBound() && cardinality.upperEndpoint() <= limit;
-    }
-
-    private static boolean isLeftOrFullOuter(Type type)
-    {
-        return type == LEFT || type == FULL;
-    }
-
-    private static boolean isRightOrFullOuter(Type type)
-    {
-        return type == RIGHT || type == FULL;
     }
 }

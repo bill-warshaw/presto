@@ -16,7 +16,9 @@ package io.prestosql.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.prestosql.sql.planner.iterative.Lookup;
+import io.prestosql.sql.planner.plan.AggregationNode.Aggregation;
 import io.prestosql.sql.planner.plan.PlanNode;
+import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.tree.DefaultExpressionTraversalVisitor;
 import io.prestosql.sql.tree.DefaultTraversalVisitor;
 import io.prestosql.sql.tree.DereferenceExpression;
@@ -78,10 +80,43 @@ public final class SymbolsExtractor
         return unique.build();
     }
 
+    public static Set<Symbol> extractUnique(Aggregation aggregation)
+    {
+        return ImmutableSet.copyOf(extractAll(aggregation));
+    }
+
+    public static Set<Symbol> extractUnique(WindowNode.Function function)
+    {
+        return ImmutableSet.copyOf(extractAll(function));
+    }
+
     public static List<Symbol> extractAll(Expression expression)
     {
         ImmutableList.Builder<Symbol> builder = ImmutableList.builder();
         new SymbolBuilderVisitor().process(expression, builder);
+        return builder.build();
+    }
+
+    public static List<Symbol> extractAll(Aggregation aggregation)
+    {
+        ImmutableList.Builder<Symbol> builder = ImmutableList.builder();
+        for (Expression argument : aggregation.getArguments()) {
+            builder.addAll(extractAll(argument));
+        }
+        aggregation.getFilter().ifPresent(builder::add);
+        aggregation.getOrderingScheme().ifPresent(orderBy -> builder.addAll(orderBy.getOrderBy()));
+        aggregation.getMask().ifPresent(builder::add);
+        return builder.build();
+    }
+
+    public static List<Symbol> extractAll(WindowNode.Function function)
+    {
+        ImmutableList.Builder<Symbol> builder = ImmutableList.builder();
+        for (Expression argument : function.getArguments()) {
+            builder.addAll(extractAll(argument));
+        }
+        function.getFrame().getEndValue().ifPresent(builder::add);
+        function.getFrame().getStartValue().ifPresent(builder::add);
         return builder.build();
     }
 
@@ -108,7 +143,7 @@ public final class SymbolsExtractor
     }
 
     private static class SymbolBuilderVisitor
-            extends DefaultExpressionTraversalVisitor<Void, ImmutableList.Builder<Symbol>>
+            extends DefaultExpressionTraversalVisitor<ImmutableList.Builder<Symbol>>
     {
         @Override
         protected Void visitSymbolReference(SymbolReference node, ImmutableList.Builder<Symbol> builder)
@@ -119,7 +154,7 @@ public final class SymbolsExtractor
     }
 
     private static class QualifiedNameBuilderVisitor
-            extends DefaultTraversalVisitor<Void, ImmutableSet.Builder<QualifiedName>>
+            extends DefaultTraversalVisitor<ImmutableSet.Builder<QualifiedName>>
     {
         private final Set<NodeRef<Expression>> columnReferences;
 

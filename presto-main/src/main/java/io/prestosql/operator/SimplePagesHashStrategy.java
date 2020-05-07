@@ -14,7 +14,7 @@
 package io.prestosql.operator;
 
 import com.google.common.collect.ImmutableList;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
 import io.prestosql.spi.block.Block;
@@ -52,7 +52,7 @@ public class SimplePagesHashStrategy
             List<Integer> hashChannels,
             OptionalInt precomputedHashChannel,
             Optional<Integer> sortChannel,
-            FunctionRegistry functionRegistry)
+            Metadata metadata)
     {
         this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
         this.outputChannels = ImmutableList.copyOf(requireNonNull(outputChannels, "outputChannels is null"));
@@ -67,11 +67,11 @@ public class SimplePagesHashStrategy
             this.precomputedHashChannel = null;
         }
         this.sortChannel = requireNonNull(sortChannel, "sortChannel is null");
-        requireNonNull(functionRegistry, "functionRegistry is null");
+        requireNonNull(metadata, "metadata is null");
         ImmutableList.Builder<MethodHandle> distinctFromMethodHandlesBuilder = ImmutableList.builder();
-        for (Type type : types) {
+        for (int i = 0; i < hashChannels.size(); i++) {
             distinctFromMethodHandlesBuilder.add(
-                    functionRegistry.getScalarFunctionImplementation(functionRegistry.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(type, type))).getMethodHandle());
+                    metadata.getScalarFunctionImplementation(metadata.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(types.get(i), types.get(i)))).getMethodHandle());
         }
         distinctFromMethodHandles = distinctFromMethodHandlesBuilder.build();
     }
@@ -198,7 +198,7 @@ public class SimplePagesHashStrategy
             int hashChannel = hashChannels.get(i);
             Block leftBlock = channels.get(hashChannel).get(leftBlockIndex);
             Block rightBlock = page.getBlock(rightChannels[i]);
-            MethodHandle methodHandle = distinctFromMethodHandles.get(hashChannel);
+            MethodHandle methodHandle = distinctFromMethodHandles.get(i);
             try {
                 if (!(boolean) methodHandle.invokeExact(leftBlock, leftPosition, rightBlock, rightPosition)) {
                     return false;

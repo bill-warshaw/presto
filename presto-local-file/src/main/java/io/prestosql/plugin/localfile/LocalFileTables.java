@@ -95,7 +95,7 @@ public class LocalFileTables
 
     public List<ColumnMetadata> getColumns(LocalFileTableHandle tableHandle)
     {
-        checkArgument(tableColumns.containsKey(tableHandle.getSchemaTableName()), "Table %s not registered", tableHandle.getSchemaTableName());
+        checkArgument(tableColumns.containsKey(tableHandle.getSchemaTableName()), "Table '%s' not registered", tableHandle.getSchemaTableName());
         return tableColumns.get(tableHandle.getSchemaTableName());
     }
 
@@ -110,7 +110,7 @@ public class LocalFileTables
         }
     }
 
-    public static class HttpRequestLogTable
+    public static final class HttpRequestLogTable
     {
         private static final List<ColumnMetadata> COLUMNS = ImmutableList.of(
                 SERVER_ADDRESS_COLUMN,

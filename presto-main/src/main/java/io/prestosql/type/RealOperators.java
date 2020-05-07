@@ -32,6 +32,7 @@ import io.prestosql.spi.type.AbstractIntType;
 import io.prestosql.spi.type.StandardTypes;
 
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.prestosql.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
 import static io.prestosql.spi.function.OperatorType.ADD;
 import static io.prestosql.spi.function.OperatorType.BETWEEN;
@@ -57,6 +58,7 @@ import static java.lang.Float.floatToIntBits;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
 import static java.lang.Math.toIntExact;
+import static java.lang.String.format;
 import static java.math.RoundingMode.FLOOR;
 
 public final class RealOperators
@@ -194,18 +196,26 @@ public final class RealOperators
     @SqlType(StandardTypes.BIGINT)
     public static long castToLong(@SqlType(StandardTypes.REAL) long value)
     {
-        return (long) MathFunctions.round((double) intBitsToFloat((int) value));
+        float floatValue = intBitsToFloat((int) value);
+        if (Float.isNaN(floatValue)) {
+            throw new PrestoException(INVALID_CAST_ARGUMENT, "Cannot cast real NaN to bigint");
+        }
+        return (long) MathFunctions.round((double) floatValue);
     }
 
     @ScalarOperator(CAST)
     @SqlType(StandardTypes.INTEGER)
     public static long castToInteger(@SqlType(StandardTypes.REAL) long value)
     {
+        float floatValue = intBitsToFloat((int) value);
+        if (Float.isNaN(floatValue)) {
+            throw new PrestoException(INVALID_CAST_ARGUMENT, "Cannot cast real NaN to integer");
+        }
         try {
-            return toIntExact((long) MathFunctions.round((double) intBitsToFloat((int) value)));
+            return toIntExact((long) MathFunctions.round((double) floatValue));
         }
         catch (ArithmeticException e) {
-            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for integer: " + value, e);
+            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for integer: " + floatValue, e);
         }
     }
 
@@ -213,11 +223,15 @@ public final class RealOperators
     @SqlType(StandardTypes.SMALLINT)
     public static long castToSmallint(@SqlType(StandardTypes.REAL) long value)
     {
+        float floatValue = intBitsToFloat((int) value);
+        if (Float.isNaN(floatValue)) {
+            throw new PrestoException(INVALID_CAST_ARGUMENT, "Cannot cast real NaN to smallint");
+        }
         try {
-            return Shorts.checkedCast((long) MathFunctions.round((double) intBitsToFloat((int) value)));
+            return Shorts.checkedCast((long) MathFunctions.round((double) floatValue));
         }
         catch (IllegalArgumentException e) {
-            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for smallint: " + value, e);
+            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for smallint: " + floatValue, e);
         }
     }
 
@@ -225,11 +239,15 @@ public final class RealOperators
     @SqlType(StandardTypes.TINYINT)
     public static long castToTinyint(@SqlType(StandardTypes.REAL) long value)
     {
+        float floatValue = intBitsToFloat((int) value);
+        if (Float.isNaN(floatValue)) {
+            throw new PrestoException(INVALID_CAST_ARGUMENT, "Cannot cast real NaN to tinyint");
+        }
         try {
-            return SignedBytes.checkedCast((long) MathFunctions.round((double) intBitsToFloat((int) value)));
+            return SignedBytes.checkedCast((long) MathFunctions.round((double) floatValue));
         }
         catch (IllegalArgumentException e) {
-            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for tinyint: " + value, e);
+            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, "Out of range for tinyint: " + floatValue, e);
         }
     }
 
@@ -248,7 +266,7 @@ public final class RealOperators
     }
 
     @ScalarOperator(IS_DISTINCT_FROM)
-    public static class RealDistinctFromOperator
+    public static final class RealDistinctFromOperator
     {
         @SqlType(StandardTypes.BOOLEAN)
         public static boolean isDistinctFrom(
@@ -292,17 +310,17 @@ public final class RealOperators
     @SqlType(StandardTypes.SMALLINT)
     public static long saturatedFloorCastToSmallint(@SqlType(StandardTypes.REAL) long value)
     {
-        return saturatedFloorCastToLong(value, Short.MIN_VALUE, MIN_SHORT_AS_FLOAT, Short.MAX_VALUE, MAX_SHORT_PLUS_ONE_AS_FLOAT);
+        return saturatedFloorCastToLong(value, Short.MIN_VALUE, MIN_SHORT_AS_FLOAT, Short.MAX_VALUE, MAX_SHORT_PLUS_ONE_AS_FLOAT, StandardTypes.SMALLINT);
     }
 
     @ScalarOperator(SATURATED_FLOOR_CAST)
     @SqlType(StandardTypes.TINYINT)
     public static long saturatedFloorCastToTinyint(@SqlType(StandardTypes.REAL) long value)
     {
-        return saturatedFloorCastToLong(value, Byte.MIN_VALUE, MIN_BYTE_AS_FLOAT, Byte.MAX_VALUE, MAX_BYTE_PLUS_ONE_AS_FLOAT);
+        return saturatedFloorCastToLong(value, Byte.MIN_VALUE, MIN_BYTE_AS_FLOAT, Byte.MAX_VALUE, MAX_BYTE_PLUS_ONE_AS_FLOAT, StandardTypes.TINYINT);
     }
 
-    private static long saturatedFloorCastToLong(long valueBits, long minValue, float minValueAsDouble, long maxValue, float maxValuePlusOneAsDouble)
+    private static long saturatedFloorCastToLong(long valueBits, long minValue, float minValueAsDouble, long maxValue, float maxValuePlusOneAsDouble, String targetType)
     {
         float value = intBitsToFloat((int) valueBits);
         if (value <= minValueAsDouble) {
@@ -311,7 +329,12 @@ public final class RealOperators
         if (value + 1 >= maxValuePlusOneAsDouble) {
             return maxValue;
         }
-        return DoubleMath.roundToLong(value, FLOOR);
+        try {
+            return DoubleMath.roundToLong(value, FLOOR);
+        }
+        catch (ArithmeticException e) {
+            throw new PrestoException(INVALID_CAST_ARGUMENT, format("Unable to cast real %s to %s", value, targetType), e);
+        }
     }
 
     @ScalarOperator(INDETERMINATE)

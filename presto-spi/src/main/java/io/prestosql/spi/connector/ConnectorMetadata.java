@@ -15,6 +15,7 @@ package io.prestosql.spi.connector;
 
 import io.airlift.slice.Slice;
 import io.prestosql.spi.PrestoException;
+import io.prestosql.spi.expression.ConnectorExpression;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
 import io.prestosql.spi.security.PrestoPrincipal;
@@ -27,6 +28,7 @@ import io.prestosql.spi.statistics.TableStatisticsMetadata;
 import javax.annotation.Nullable;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -55,13 +57,19 @@ public interface ConnectorMetadata
     /**
      * Returns the schemas provided by this connector.
      */
-    List<String> listSchemaNames(ConnectorSession session);
+    default List<String> listSchemaNames(ConnectorSession session)
+    {
+        return emptyList();
+    }
 
     /**
      * Returns a table handle for the specified table name, or null if the connector does not contain the table.
      */
     @Nullable
-    ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName);
+    default ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    {
+        return null;
+    }
 
     /**
      * Returns a table handle for the specified table name, or null if the connector does not contain the table.
@@ -93,7 +101,7 @@ public interface ConnectorMetadata
     default List<ConnectorTableLayoutResult> getTableLayouts(
             ConnectorSession session,
             ConnectorTableHandle table,
-            Constraint<ColumnHandle> constraint,
+            Constraint constraint,
             Optional<Set<ColumnHandle>> desiredColumns)
     {
         if (usesLegacyTableLayouts()) {
@@ -119,8 +127,23 @@ public interface ConnectorMetadata
      * The provided table layout handle must be one that the connector can transparently convert to from
      * the original partitioning handle associated with the provided table layout handle,
      * as promised by {@link #getCommonPartitioningHandle}.
+     *
+     * @deprecated use the version without layouts
      */
+    @Deprecated
     default ConnectorTableLayoutHandle makeCompatiblePartitioning(ConnectorSession session, ConnectorTableLayoutHandle tableLayoutHandle, ConnectorPartitioningHandle partitioningHandle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getCommonPartitioningHandle() is implemented without makeCompatiblePartitioning()");
+    }
+
+    /**
+     * Return a table handle whose partitioning is converted to the provided partitioning handle,
+     * but otherwise identical to the provided table handle.
+     * The provided table handle must be one that the connector can transparently convert to from
+     * the original partitioning handle associated with the provided table handle,
+     * as promised by {@link #getCommonPartitioningHandle}.
+     */
+    default ConnectorTableHandle makeCompatiblePartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorPartitioningHandle partitioningHandle)
     {
         throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getCommonPartitioningHandle() is implemented without makeCompatiblePartitioning()");
     }
@@ -141,7 +164,10 @@ public interface ConnectorMetadata
      *
      * @throws RuntimeException if table handle is no longer valid
      */
-    ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle table);
+    default ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle table)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getTableHandle() is implemented without getTableMetadata()");
+    }
 
     /**
      * Return the connector-specific metadata for the specified table layout. This is the object that is passed to the event listener framework.
@@ -160,7 +186,7 @@ public interface ConnectorMetadata
     }
 
     /**
-     * List table names, possibly filtered by schema. An empty list is returned if none match.
+     * List table and view names, possibly filtered by schema. An empty list is returned if none match.
      */
     default List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
@@ -168,28 +194,37 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Gets all of the columns on the specified table, or an empty map if the columns can not be enumerated.
+     * Gets all of the columns on the specified table, or an empty map if the columns cannot be enumerated.
      *
      * @throws RuntimeException if table handle is no longer valid
      */
-    Map<String, ColumnHandle> getColumnHandles(ConnectorSession session, ConnectorTableHandle tableHandle);
+    default Map<String, ColumnHandle> getColumnHandles(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getTableHandle() is implemented without getColumnHandles()");
+    }
 
     /**
      * Gets the metadata for the specified table column.
      *
      * @throws RuntimeException if table or column handles are no longer valid
      */
-    ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle);
+    default ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getTableHandle() is implemented without getColumnMetadata()");
+    }
 
     /**
      * Gets the metadata for all columns that match the specified table prefix.
      */
-    Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix);
+    default Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
+    {
+        return emptyMap();
+    }
 
     /**
      * Get statistics for table for given filtering constraint.
      */
-    default TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    default TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint constraint)
     {
         return TableStatistics.empty();
     }
@@ -197,7 +232,7 @@ public interface ConnectorMetadata
     /**
      * Creates a schema.
      */
-    default void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties)
+    default void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties, PrestoPrincipal owner)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating schemas");
     }
@@ -221,6 +256,14 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Sets the user/role on the specified schema.
+     */
+    default void setSchemaAuthorization(ConnectorSession session, String source, PrestoPrincipal principal)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support setting an owner on a schema");
+    }
+
+    /**
      * Creates a table using the specified table metadata.
      *
      * @throws PrestoException with {@code ALREADY_EXISTS} if the table already exists and {@param ignoreExisting} is not set
@@ -233,7 +276,7 @@ public interface ConnectorMetadata
     /**
      * Drops the specified table
      *
-     * @throws RuntimeException if the table can not be dropped or table handle is no longer valid
+     * @throws RuntimeException if the table cannot be dropped or table handle is no longer valid
      */
     default void dropTable(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
@@ -366,11 +409,28 @@ public interface ConnectorMetadata
     default void cleanupQuery(ConnectorSession session) {}
 
     /**
-     * Begin insert query
+     * @deprecated Use {@link #beginInsert(ConnectorSession, ConnectorTableHandle, List)} instead.
      */
+    @Deprecated
     default ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support inserts");
+    }
+
+    /**
+     * Begin insert query
+     */
+    default ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columns)
+    {
+        return beginInsert(session, tableHandle);
+    }
+
+    /**
+     * @return whether connector handles missing columns during insert
+     */
+    default boolean supportsMissingColumnsOnInsert()
+    {
+        return false;
     }
 
     /**
@@ -410,11 +470,20 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Create the specified view. The data for the view is opaque to the connector.
+     * Create the specified view. The view definition is intended to
+     * be serialized by the connector for permanent storage.
      */
-    default void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    default void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, boolean replace)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating views");
+    }
+
+    /**
+     * Rename the specified view
+     */
+    default void renameView(ConnectorSession session, SchemaTableName source, SchemaTableName target)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support renaming views");
     }
 
     /**
@@ -431,11 +500,41 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Gets the view data for views that match the specified table prefix.
+     * Gets the definitions of views, possibly filtered by schema.
+     * This optional method may be implemented by connectors that can support fetching
+     * view data in bulk. It is used to implement {@code information_schema.views}.
      */
-    default Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, SchemaTablePrefix prefix)
+    default Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, Optional<String> schemaName)
     {
-        return emptyMap();
+        Map<SchemaTableName, ConnectorViewDefinition> views = new HashMap<>();
+        for (SchemaTableName name : listViews(session, schemaName)) {
+            getView(session, name).ifPresent(view -> views.put(name, view));
+        }
+        return views;
+    }
+
+    /**
+     * Gets the view data for the specified view name.
+     */
+    default Optional<ConnectorViewDefinition> getView(ConnectorSession session, SchemaTableName viewName)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Gets the schema properties for the specified schema.
+     */
+    default Map<String, Object> getSchemaProperties(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support schema properties");
+    }
+
+    /**
+     * Get the schema properties for the specified schema.
+     */
+    default Optional<PrestoPrincipal> getSchemaOwner(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support schema ownership");
     }
 
     /**
@@ -454,6 +553,25 @@ public interface ConnectorMetadata
     default OptionalLong metadataDelete(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorTableLayoutHandle tableLayoutHandle)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support deletes");
+    }
+
+    /**
+     * Attempt to push down a delete operation into the connector. If a connector
+     * can execute a delete for the table handle on its own, it should return a
+     * table handle, which will be passed back to {@link #executeDelete} during
+     * query executing to actually execute the delete.
+     */
+    default Optional<ConnectorTableHandle> applyDelete(ConnectorSession session, ConnectorTableHandle handle)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Execute the delete operation on the handle returned from {@link #applyDelete}.
+     */
+    default OptionalLong executeDelete(ConnectorSession session, ConnectorTableHandle handle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata applyDelete() is implemented without executeDelete()");
     }
 
     /**
@@ -503,7 +621,7 @@ public interface ConnectorMetadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean withAdminOption, Optional<PrestoPrincipal> grantor)
+    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }
@@ -513,7 +631,7 @@ public interface ConnectorMetadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOptionFor, Optional<PrestoPrincipal> grantor)
+    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }
@@ -606,7 +724,7 @@ public interface ConnectorMetadata
      * If the connector can guarantee it will produce fewer rows than the provided limit, it should return a
      * non-empty result with the "limit guaranteed" flag set to true.
      */
-    default Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorTableHandle handle, long limit)
+    default Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorSession session, ConnectorTableHandle handle, long limit)
     {
         return Optional.empty();
     }
@@ -625,8 +743,100 @@ public interface ConnectorMetadata
      * to loop indefinitely.
      * </p>
      */
-    default Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorTableHandle handle, Constraint<ColumnHandle> constraint)
+    default Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorSession session, ConnectorTableHandle handle, Constraint constraint)
     {
         return Optional.empty();
     }
+
+    /**
+     * Attempt to push down the provided projections into the table.
+     * <p>
+     * Connectors can indicate whether they don't support projection pushdown or that the action had no effect
+     * by returning {@link Optional#empty()}. Connectors should expect this method to be called multiple times
+     * during the optimization of a given query.
+     * <p>
+     * <b>Note</b>: it's critical for connectors to return Optional.empty() if calling this method has no effect for that
+     * invocation, even if the connector generally supports pushdown. Doing otherwise can cause the optimizer
+     * to loop indefinitely.
+     * </p>
+     * <p>
+     * If the method returns a result, the list of projections in the result *replaces* the existing ones, and the
+     * list of assignments is the new set of columns exposed by the derived table.
+     * <p>
+     * As an example, given the following plan:
+     *
+     * <pre>
+     * - project
+     *     x = f1(a, b)
+     *     y = f2(a, b)
+     *     z = f3(a, b)
+     *   - scan (TH0)
+     *       a = CH0
+     *       b = CH1
+     *       c = CH2
+     * </pre>
+     * <p>
+     * The optimizer would call {@link #applyProjection} with the following arguments:
+     *
+     * <pre>
+     * handle = TH0
+     * projections = [
+     *     f1(a, b)
+     *     f2(a, b)
+     *     f3(a, b)
+     * ]
+     * assignments = [
+     *     a = CH0
+     *     b = CH1
+     *     c = CH2
+     * ]
+     * </pre>
+     * <p>
+     * Assuming the connector knows how to handle f1(...) and f2(...), it would return:
+     *
+     * <pre>
+     * handle = TH1
+     * projections = [
+     *     v2
+     *     v3
+     *     f3(v0, v1)
+     * ]
+     * assignments = [
+     *     v0 = CH0
+     *     v1 = CH1
+     *     v2 = CH3  (synthetic column for f1(CH0, CH1))
+     *     v3 = CH4  (synthetic column for f2(CH0, CH1))
+     * ]
+     * </pre>
+     */
+    default Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session, ConnectorTableHandle handle, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Attempt to push down the sampling into the table.
+     * <p>
+     * Connectors can indicate whether they don't support sample pushdown or that the action had no effect
+     * by returning {@link Optional#empty()}. Connectors should expect this method to be called multiple times
+     * during the optimization of a given query.
+     * <p>
+     * <b>Note</b>: it's critical for connectors to return Optional.empty() if calling this method has no effect for that
+     * invocation, even if the connector generally supports sample pushdown. Doing otherwise can cause the optimizer
+     * to loop indefinitely.
+     * </p>
+     */
+    default Optional<ConnectorTableHandle> applySample(ConnectorSession session, ConnectorTableHandle handle, SampleType sampleType, double sampleRatio)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Allows the connector to reject the table scan produced by the planner.
+     * <p>
+     * Connectors can choose to reject a query based on the table scan potentially being too expensive, for example
+     * if no filtering is done on a partition column.
+     * <p>
+     */
+    default void validateScan(ConnectorSession session, ConnectorTableHandle handle) {}
 }

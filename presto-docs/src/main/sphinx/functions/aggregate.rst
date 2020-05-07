@@ -4,6 +4,11 @@ Aggregate Functions
 
 Aggregate functions operate on a set of values to compute a single result.
 
+.. contents::
+    :local:
+    :backlinks: none
+    :depth: 1
+
 Except for :func:`count`, :func:`count_if`, :func:`max_by`, :func:`min_by` and
 :func:`approx_distinct`, all of these aggregate functions ignore null values
 and return null for no input rows or when all values are null. For example,
@@ -11,12 +16,79 @@ and return null for no input rows or when all values are null. For example,
 values in the count. The ``coalesce`` function can be used to convert null into
 zero.
 
+Ordering During Aggregation
+----------------------------
+
 Some aggregate functions such as :func:`array_agg` produce different results
 depending on the order of input values. This ordering can be specified by writing
 an :ref:`order-by-clause` within the aggregate function::
 
     array_agg(x ORDER BY y DESC)
     array_agg(x ORDER BY x, y, z)
+
+Filtering During Aggregation
+----------------------------
+
+The ``FILTER`` keyword can be used to remove rows from aggregation processing
+with a condition expressed using a ``WHERE`` clause. This is evaluated for each
+row before it is used in the aggregation and is supported for all aggregate
+functions.
+
+.. code-block:: none
+
+    aggregate_function(...) FILTER (WHERE <condition>)
+
+A common and very useful example is to use ``FILTER`` to remove nulls from
+consideration when using ``array_agg``::
+
+    SELECT array_agg(name) FILTER (WHERE name IS NOT NULL)
+    FROM region;
+
+As another example, imagine you want to add a condition on the count for Iris
+flowers, modifying the following query::
+
+    SELECT species,
+           count(*) AS count
+    FROM iris
+    GROUP BY species;
+
+.. code-block:: none
+
+    species    | count
+    -----------+-------
+    setosa     |   50
+    virginica  |   50
+    versicolor |   50
+
+If you just use a normal ``WHERE`` statement you loose information::
+
+    SELECT species,
+        count(*) AS count
+    FROM iris
+    WHERE petal_length_cm > 4
+    GROUP BY species;
+
+.. code-block:: none
+
+    species    | count
+    -----------+-------
+    virginica  |   50
+    versicolor |   34
+
+Using a filter you retain all information::
+
+    SELECT species,
+           count(*) FILTER (where petal_length_cm > 4) AS count
+    FROM iris
+    GROUP BY species;
+
+.. code-block:: none
+
+    species    | count
+    -----------+-------
+    virginica  |   50
+    setosa     |    0
+    versicolor |   34
 
 
 General Aggregate Functions
@@ -182,29 +254,29 @@ Approximate Aggregate Functions
 .. function:: approx_percentile(x, w, percentage) -> [same as x]
 
     Returns the approximate weighed percentile for all input values of ``x``
-    using the per-item weight ``w`` at the percentage ``p``. The weight must be
-    an integer value of at least one. It is effectively a replication count for
-    the value ``x`` in the percentile set. The value of ``p`` must be between
-    zero and one and must be constant for all input rows.
+    using the per-item weight ``w`` at the percentage ``p``. Weights must be
+    strictly positive. Integer-value weights can be thought of as a replication
+    count for the value ``x`` in the percentile set. The value of ``p`` must be
+    between zero and one and must be constant for all input rows.
 
 .. function:: approx_percentile(x, w, percentage, accuracy) -> [same as x]
 
     Returns the approximate weighed percentile for all input values of ``x``
     using the per-item weight ``w`` at the percentage ``p``, with a maximum rank
-    error of ``accuracy``. The weight must be an integer value of at least one.
-    It is effectively a replication count for the value ``x`` in the percentile
-    set. The value of ``p`` must be between zero and one and must be constant
-    for all input rows. ``accuracy`` must be a value greater than zero and less
-    than one, and it must be constant for all input rows.
+    error of ``accuracy``. Weights must be strictly positive. Integer-value
+    weights can be thought of as a replication count for the value ``x`` in the
+    percentile set. The value of ``p`` must be between zero and one and must be
+    constant for all input rows. ``accuracy`` must be a value greater than zero
+    and less than one, and it must be constant for all input rows.
 
 .. function:: approx_percentile(x, w, percentages) -> array<[same as x]>
 
     Returns the approximate weighed percentile for all input values of ``x``
     using the per-item weight ``w`` at each of the given percentages specified
-    in the array. The weight must be an integer value of at least one. It is
-    effectively a replication count for the value ``x`` in the percentile set.
-    Each element of the array must be between zero and one, and the array must
-    be constant for all input rows.
+    in the array. Weights must be strictly positive. Integer-value weights can
+    be thought of as a replication count for the value ``x`` in the percentile
+    set. Each element of the array must be between zero and one, and the array
+    must be constant for all input rows.
 
 .. function:: approx_set(x) -> HyperLogLog
     :noindex:
@@ -355,3 +427,5 @@ Lambda Aggregate Functions
         -- (2, 42)
 
     The state type must be a boolean, integer, floating-point, or date/time/interval.
+
+

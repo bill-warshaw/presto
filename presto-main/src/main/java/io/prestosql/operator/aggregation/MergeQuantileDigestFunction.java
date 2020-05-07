@@ -17,7 +17,10 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.airlift.stats.QuantileDigest;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.FunctionArgumentDefinition;
+import io.prestosql.metadata.FunctionMetadata;
+import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.state.QuantileDigestState;
 import io.prestosql.operator.aggregation.state.QuantileDigestStateFactory;
@@ -30,13 +33,15 @@ import io.prestosql.spi.function.InputFunction;
 import io.prestosql.spi.type.QuantileDigestType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.prestosql.metadata.FunctionKind.AGGREGATE;
 import static io.prestosql.metadata.Signature.comparableTypeParameter;
 import static io.prestosql.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata;
@@ -44,7 +49,7 @@ import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMet
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INPUT_CHANNEL;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationUtils.generateAggregationName;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.parametricType;
 import static io.prestosql.util.MoreMath.nearlyEqual;
 import static io.prestosql.util.Reflection.methodHandle;
 
@@ -61,25 +66,31 @@ public final class MergeQuantileDigestFunction
 
     public MergeQuantileDigestFunction()
     {
-        super(NAME,
-                ImmutableList.of(comparableTypeParameter("T")),
-                ImmutableList.of(),
-                parseTypeSignature("qdigest(T)"),
-                ImmutableList.of(parseTypeSignature("qdigest(T)")));
+        super(
+                new FunctionMetadata(
+                        new Signature(
+                                NAME,
+                                ImmutableList.of(comparableTypeParameter("T")),
+                                ImmutableList.of(),
+                                parametricType("qdigest", new TypeSignature("T")),
+                                ImmutableList.of(parametricType("qdigest", new TypeSignature("T"))),
+                                false),
+                        true,
+                        ImmutableList.of(new FunctionArgumentDefinition(false)),
+                        false,
+                        true,
+                        "Merges the input quantile digests into a single quantile digest",
+                        AGGREGATE),
+                true,
+                true);
     }
 
     @Override
-    public String getDescription()
-    {
-        return "Merges the input quantile digests into a single quantile digest";
-    }
-
-    @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type valueType = boundVariables.getTypeVariable("T");
-        QuantileDigestType outputType = (QuantileDigestType) typeManager.getParameterizedType(StandardTypes.QDIGEST,
-                ImmutableList.of(TypeSignatureParameter.of(valueType.getTypeSignature())));
+        QuantileDigestType outputType = (QuantileDigestType) metadata.getParameterizedType(StandardTypes.QDIGEST,
+                ImmutableList.of(TypeSignatureParameter.typeParameter(valueType.getTypeSignature())));
         return generateAggregation(valueType, outputType);
     }
 
@@ -93,6 +104,7 @@ public final class MergeQuantileDigestFunction
                 generateAggregationName(NAME, type.getTypeSignature(), ImmutableList.of(type.getTypeSignature())),
                 createInputParameterMetadata(type),
                 INPUT_FUNCTION.bindTo(type),
+                Optional.empty(),
                 COMBINE_FUNCTION,
                 OUTPUT_FUNCTION.bindTo(stateSerializer),
                 ImmutableList.of(new AccumulatorStateDescriptor(

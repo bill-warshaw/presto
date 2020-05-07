@@ -23,22 +23,23 @@ import io.airlift.bytecode.Variable;
 import io.airlift.bytecode.control.IfStatement;
 import io.airlift.bytecode.instruction.LabelNode;
 import io.airlift.bytecode.instruction.VariableInstruction;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.sql.relational.CallExpression;
 import io.prestosql.sql.relational.RowExpression;
+import io.prestosql.sql.relational.SpecialForm;
 
 import java.util.List;
 
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantTrue;
+import static io.prestosql.sql.relational.SpecialForm.Form.WHEN;
 
 public class SwitchCodeGenerator
         implements BytecodeGenerator
 {
     @Override
-    public BytecodeNode generateExpression(Signature signature, BytecodeGeneratorContext generatorContext, Type returnType, List<RowExpression> arguments)
+    public BytecodeNode generateExpression(ResolvedFunction resolvedFunction, BytecodeGeneratorContext generatorContext, Type returnType, List<RowExpression> arguments)
     {
         // TODO: compile as
         /*
@@ -79,7 +80,7 @@ public class SwitchCodeGenerator
 
         List<RowExpression> whenClauses;
         RowExpression last = arguments.get(arguments.size() - 1);
-        if (last instanceof CallExpression && ((CallExpression) last).getSignature().getName().equals("WHEN")) {
+        if (last instanceof SpecialForm && ((SpecialForm) last).getForm() == WHEN) {
             whenClauses = arguments.subList(1, arguments.size());
             elseValue = new BytecodeBlock()
                     .append(generatorContext.wasNull().set(constantTrue()))
@@ -107,13 +108,13 @@ public class SwitchCodeGenerator
         elseValue = new BytecodeBlock().visitLabel(nullValue).append(elseValue);
         // reverse list because current if statement builder doesn't support if/else so we need to build the if statements bottom up
         for (RowExpression clause : Lists.reverse(whenClauses)) {
-            Preconditions.checkArgument(clause instanceof CallExpression && ((CallExpression) clause).getSignature().getName().equals("WHEN"));
+            Preconditions.checkArgument(clause instanceof SpecialForm && ((SpecialForm) clause).getForm() == WHEN);
 
-            RowExpression operand = ((CallExpression) clause).getArguments().get(0);
-            RowExpression result = ((CallExpression) clause).getArguments().get(1);
+            RowExpression operand = ((SpecialForm) clause).getArguments().get(0);
+            RowExpression result = ((SpecialForm) clause).getArguments().get(1);
 
             // call equals(value, operand)
-            Signature equalsFunction = generatorContext.getRegistry().resolveOperator(OperatorType.EQUAL, ImmutableList.of(value.getType(), operand.getType()));
+            ResolvedFunction equalsFunction = generatorContext.getMetadata().resolveOperator(OperatorType.EQUAL, ImmutableList.of(value.getType(), operand.getType()));
 
             // TODO: what if operand is null? It seems that the call will return "null" (which is cleared below)
             // and the code only does the right thing because the value in the stack for that scenario is
@@ -121,8 +122,8 @@ public class SwitchCodeGenerator
             // This code should probably be checking for wasNull after the call and "failing" the equality
             // check if wasNull is true
             BytecodeNode equalsCall = generatorContext.generateCall(
-                    equalsFunction.getName(),
-                    generatorContext.getRegistry().getScalarFunctionImplementation(equalsFunction),
+                    equalsFunction.getSignature().getName(),
+                    generatorContext.getMetadata().getScalarFunctionImplementation(equalsFunction),
                     ImmutableList.of(generatorContext.generate(operand), getTempVariableNode));
 
             BytecodeBlock condition = new BytecodeBlock()

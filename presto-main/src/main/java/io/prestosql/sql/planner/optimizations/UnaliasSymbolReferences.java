@@ -17,12 +17,12 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.block.SortOrder;
 import io.prestosql.sql.planner.DeterminismEvaluator;
 import io.prestosql.sql.planner.OrderingScheme;
@@ -35,6 +35,7 @@ import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
 import io.prestosql.sql.planner.plan.Assignments;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
@@ -47,9 +48,9 @@ import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
 import io.prestosql.sql.planner.plan.IntersectNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
+import io.prestosql.sql.planner.plan.OffsetNode;
 import io.prestosql.sql.planner.plan.OutputNode;
 import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.ProjectNode;
@@ -62,6 +63,7 @@ import io.prestosql.sql.planner.plan.SimplePlanRewriter;
 import io.prestosql.sql.planner.plan.SortNode;
 import io.prestosql.sql.planner.plan.SpatialJoinNode;
 import io.prestosql.sql.planner.plan.StatisticsWriterNode;
+import io.prestosql.sql.planner.plan.TableDeleteNode;
 import io.prestosql.sql.planner.plan.TableFinishNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.TableWriterNode;
@@ -74,7 +76,6 @@ import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.ExpressionRewriter;
 import io.prestosql.sql.tree.ExpressionTreeRewriter;
-import io.prestosql.sql.tree.FunctionCall;
 import io.prestosql.sql.tree.NullLiteral;
 import io.prestosql.sql.tree.SymbolReference;
 
@@ -86,6 +87,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -107,6 +109,13 @@ import static java.util.Objects.requireNonNull;
 public class UnaliasSymbolReferences
         implements PlanOptimizer
 {
+    private final Metadata metadata;
+
+    public UnaliasSymbolReferences(Metadata metadata)
+    {
+        this.metadata = requireNonNull(metadata, "metadata is null");
+    }
+
     @Override
     public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
@@ -116,17 +125,19 @@ public class UnaliasSymbolReferences
         requireNonNull(symbolAllocator, "symbolAllocator is null");
         requireNonNull(idAllocator, "idAllocator is null");
 
-        return SimplePlanRewriter.rewriteWith(new Rewriter(types), plan);
+        return SimplePlanRewriter.rewriteWith(new Rewriter(metadata, types), plan);
     }
 
     private static class Rewriter
             extends SimplePlanRewriter<Void>
     {
         private final Map<Symbol, Symbol> mapping = new HashMap<>();
+        private final Metadata metadata;
         private final TypeProvider types;
 
-        private Rewriter(TypeProvider types)
+        private Rewriter(Metadata metadata, TypeProvider types)
         {
+            this.metadata = metadata;
             this.types = types;
         }
 
@@ -178,11 +189,21 @@ public class UnaliasSymbolReferences
         public PlanNode visitUnnest(UnnestNode node, RewriteContext<Void> context)
         {
             PlanNode source = context.rewrite(node.getSource());
-            ImmutableMap.Builder<Symbol, List<Symbol>> builder = ImmutableMap.builder();
-            for (Map.Entry<Symbol, List<Symbol>> entry : node.getUnnestSymbols().entrySet()) {
-                builder.put(canonicalize(entry.getKey()), entry.getValue());
+
+            ImmutableList.Builder<UnnestNode.Mapping> mappings = ImmutableList.builder();
+
+            for (UnnestNode.Mapping mapping : node.getMappings()) {
+                mappings.add(new UnnestNode.Mapping(canonicalize(mapping.getInput()), mapping.getOutputs()));
             }
-            return new UnnestNode(node.getId(), source, canonicalizeAndDistinct(node.getReplicateSymbols()), builder.build(), node.getOrdinalitySymbol());
+
+            return new UnnestNode(
+                    node.getId(),
+                    source,
+                    canonicalizeAndDistinct(node.getReplicateSymbols()),
+                    mappings.build(),
+                    node.getOrdinalitySymbol(),
+                    node.getJoinType(),
+                    node.getFilter().map(this::canonicalize));
         }
 
         @Override
@@ -191,15 +212,13 @@ public class UnaliasSymbolReferences
             PlanNode source = context.rewrite(node.getSource());
 
             ImmutableMap.Builder<Symbol, WindowNode.Function> functions = ImmutableMap.builder();
-            for (Map.Entry<Symbol, WindowNode.Function> entry : node.getWindowFunctions().entrySet()) {
-                Symbol symbol = entry.getKey();
+            node.getWindowFunctions().forEach((symbol, function) -> {
+                ResolvedFunction resolvedFunction = function.getResolvedFunction();
+                List<Expression> arguments = canonicalize(function.getArguments());
+                WindowNode.Frame canonicalFrame = canonicalize(function.getFrame());
 
-                FunctionCall canonicalFunctionCall = (FunctionCall) canonicalize(entry.getValue().getFunctionCall());
-                Signature signature = entry.getValue().getSignature();
-                WindowNode.Frame canonicalFrame = canonicalize(entry.getValue().getFrame());
-
-                functions.put(canonicalize(symbol), new WindowNode.Function(canonicalFunctionCall, signature, canonicalFrame));
-            }
+                functions.put(canonicalize(symbol), new WindowNode.Function(resolvedFunction, arguments, canonicalFrame, function.isIgnoreNulls()));
+            });
 
             return new WindowNode(
                     node.getId(),
@@ -325,8 +344,18 @@ public class UnaliasSymbolReferences
         }
 
         @Override
+        public PlanNode visitOffset(OffsetNode node, RewriteContext<Void> context)
+        {
+            return context.defaultRewrite(node);
+        }
+
+        @Override
         public PlanNode visitLimit(LimitNode node, RewriteContext<Void> context)
         {
+            if (node.isWithTies()) {
+                PlanNode source = context.rewrite(node.getSource());
+                return new LimitNode(node.getId(), source, node.getCount(), node.getTiesResolvingScheme().map(this::canonicalizeAndDistinct), node.isPartial());
+            }
             return context.defaultRewrite(node);
         }
 
@@ -357,6 +386,12 @@ public class UnaliasSymbolReferences
         }
 
         @Override
+        public PlanNode visitTableDelete(TableDeleteNode node, RewriteContext<Void> context)
+        {
+            return node;
+        }
+
+        @Override
         public PlanNode visitDelete(DeleteNode node, RewriteContext<Void> context)
         {
             return new DeleteNode(node.getId(), context.rewrite(node.getSource()), node.getTarget(), canonicalize(node.getRowId()), node.getOutputSymbols());
@@ -381,7 +416,14 @@ public class UnaliasSymbolReferences
         @Override
         public PlanNode visitRowNumber(RowNumberNode node, RewriteContext<Void> context)
         {
-            return new RowNumberNode(node.getId(), context.rewrite(node.getSource()), canonicalizeAndDistinct(node.getPartitionBy()), canonicalize(node.getRowNumberSymbol()), node.getMaxRowCountPerPartition(), canonicalize(node.getHashSymbol()));
+            return new RowNumberNode(
+                    node.getId(),
+                    context.rewrite(node.getSource()),
+                    canonicalizeAndDistinct(node.getPartitionBy()),
+                    node.isOrderSensitive(),
+                    canonicalize(node.getRowNumberSymbol()),
+                    node.getMaxRowCountPerPartition(),
+                    canonicalize(node.getHashSymbol()));
         }
 
         @Override
@@ -448,13 +490,13 @@ public class UnaliasSymbolReferences
         }
 
         @Override
-        public PlanNode visitLateralJoin(LateralJoinNode node, RewriteContext<Void> context)
+        public PlanNode visitCorrelatedJoin(CorrelatedJoinNode node, RewriteContext<Void> context)
         {
             PlanNode source = context.rewrite(node.getInput());
             PlanNode subquery = context.rewrite(node.getSubquery());
             List<Symbol> canonicalCorrelation = canonicalizeAndDistinct(node.getCorrelation());
 
-            return new LateralJoinNode(node.getId(), source, subquery, canonicalCorrelation, node.getType(), canonicalize(node.getFilter()), node.getOriginSubquery());
+            return new CorrelatedJoinNode(node.getId(), source, subquery, canonicalCorrelation, node.getType(), canonicalize(node.getFilter()), node.getOriginSubquery());
         }
 
         @Override
@@ -471,7 +513,7 @@ public class UnaliasSymbolReferences
         {
             PlanNode source = context.rewrite(node.getSource());
 
-            return new SortNode(node.getId(), source, canonicalizeAndDistinct(node.getOrderingScheme()));
+            return new SortNode(node.getId(), source, canonicalizeAndDistinct(node.getOrderingScheme()), node.isPartial());
         }
 
         @Override
@@ -485,14 +527,39 @@ public class UnaliasSymbolReferences
             Optional<Symbol> canonicalLeftHashSymbol = canonicalize(node.getLeftHashSymbol());
             Optional<Symbol> canonicalRightHashSymbol = canonicalize(node.getRightHashSymbol());
 
-            if (node.getType().equals(INNER)) {
+            Map<String, Symbol> canonicalDynamicFilters = canonicalizeAndDistinct(node.getDynamicFilters());
+
+            if (node.getType() == INNER) {
                 canonicalCriteria.stream()
-                        .filter(clause -> types.get(clause.getLeft()).equals(types.get(clause.getRight())))
-                        .filter(clause -> node.getOutputSymbols().contains(clause.getLeft()))
+                        // Map right equi-condition symbol to left symbol. This helps to
+                        // reuse join node partitioning better as partitioning properties are
+                        // only derived from probe side symbols
                         .forEach(clause -> map(clause.getRight(), clause.getLeft()));
             }
 
-            return new JoinNode(node.getId(), node.getType(), left, right, canonicalCriteria, canonicalizeAndDistinct(node.getOutputSymbols()), canonicalFilter, canonicalLeftHashSymbol, canonicalRightHashSymbol, node.getDistributionType(), node.isSpillable());
+            List<Symbol> canonicalOutputs = canonicalizeAndDistinct(node.getOutputSymbols());
+            List<Symbol> leftOutputSymbols = canonicalOutputs.stream()
+                    .filter(left.getOutputSymbols()::contains)
+                    .collect(toImmutableList());
+            List<Symbol> rightOutputSymbols = canonicalOutputs.stream()
+                    .filter(right.getOutputSymbols()::contains)
+                    .collect(toImmutableList());
+
+            return new JoinNode(
+                    node.getId(),
+                    node.getType(),
+                    left,
+                    right,
+                    canonicalCriteria,
+                    leftOutputSymbols,
+                    rightOutputSymbols,
+                    canonicalFilter,
+                    canonicalLeftHashSymbol,
+                    canonicalRightHashSymbol,
+                    node.getDistributionType(),
+                    node.isSpillable(),
+                    canonicalDynamicFilters,
+                    node.getReorderJoinStatsAndCost());
         }
 
         @Override
@@ -525,7 +592,7 @@ public class UnaliasSymbolReferences
         @Override
         public PlanNode visitIndexSource(IndexSourceNode node, RewriteContext<Void> context)
         {
-            return new IndexSourceNode(node.getId(), node.getIndexHandle(), node.getTableHandle(), canonicalize(node.getLookupSymbols()), node.getOutputSymbols(), node.getAssignments(), node.getCurrentConstraint());
+            return new IndexSourceNode(node.getId(), node.getIndexHandle(), node.getTableHandle(), canonicalize(node.getLookupSymbols()), node.getOutputSymbols(), node.getAssignments());
         }
 
         @Override
@@ -598,7 +665,7 @@ public class UnaliasSymbolReferences
                         map(entry.getKey(), symbol);
                     }
                 }
-                else if (DeterminismEvaluator.isDeterministic(expression) && !(expression instanceof NullLiteral)) {
+                else if (DeterminismEvaluator.isDeterministic(expression, metadata) && !(expression instanceof NullLiteral)) {
                     // Try to map same deterministic expressions within a projection into the same symbol
                     // Omit NullLiterals since those have ambiguous types
                     Symbol computedSymbol = computedExpressions.get(expression);
@@ -669,6 +736,19 @@ public class UnaliasSymbolReferences
             return builder.build();
         }
 
+        private Map<String, Symbol> canonicalizeAndDistinct(Map<String, Symbol> dynamicFilters)
+        {
+            Set<Symbol> added = new HashSet<>();
+            ImmutableMap.Builder<String, Symbol> builder = ImmutableMap.builder();
+            for (Map.Entry<String, Symbol> entry : dynamicFilters.entrySet()) {
+                Symbol canonical = canonicalize(entry.getValue());
+                if (added.add(canonical)) {
+                    builder.put(entry.getKey(), canonical);
+                }
+            }
+            return builder.build();
+        }
+
         private WindowNode.Specification canonicalizeAndDistinct(WindowNode.Specification specification)
         {
             return new WindowNode.Specification(
@@ -726,7 +806,11 @@ public class UnaliasSymbolReferences
             for (Map.Entry<Symbol, Collection<Symbol>> entry : setOperationSymbolMap.asMap().entrySet()) {
                 Symbol canonicalOutputSymbol = canonicalize(entry.getKey());
                 if (addedSymbols.add(canonicalOutputSymbol)) {
-                    builder.putAll(canonicalOutputSymbol, Iterables.transform(entry.getValue(), this::canonicalize));
+                    builder.putAll(
+                            canonicalOutputSymbol,
+                            entry.getValue().stream()
+                                    .map(this::canonicalize)
+                                    .collect(Collectors.toList()));
                 }
             }
             return builder.build();

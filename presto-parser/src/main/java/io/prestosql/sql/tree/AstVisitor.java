@@ -222,6 +222,21 @@ public abstract class AstVisitor<R, C>
         return visitNode(node, context);
     }
 
+    protected R visitOffset(Offset node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitFetchFirst(FetchFirst node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitLimit(Limit node, C context)
+    {
+        return visitNode(node, context);
+    }
+
     protected R visitQuerySpecification(QuerySpecification node, C context)
     {
         return visitQueryBody(node, context);
@@ -434,7 +449,7 @@ public abstract class AstVisitor<R, C>
 
     protected R visitRow(Row node, C context)
     {
-        return visitNode(node, context);
+        return visitExpression(node, context);
     }
 
     protected R visitTableSubquery(TableSubquery node, C context)
@@ -527,6 +542,11 @@ public abstract class AstVisitor<R, C>
         return visitStatement(node, context);
     }
 
+    protected R visitSetSchemaAuthorization(SetSchemaAuthorization node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
     protected R visitCreateTable(CreateTable node, C context)
     {
         return visitStatement(node, context);
@@ -548,6 +568,11 @@ public abstract class AstVisitor<R, C>
     }
 
     protected R visitRenameTable(RenameTable node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
+    protected R visitRenameView(RenameView node, C context)
     {
         return visitStatement(node, context);
     }
@@ -765,5 +790,55 @@ public abstract class AstVisitor<R, C>
     protected R visitCurrentPath(CurrentPath node, C context)
     {
         return visitExpression(node, context);
+    }
+
+    protected R visitFormat(Format node, C context)
+    {
+        return visitExpression(node, context);
+    }
+
+    protected R visitDataType(DataType node, C context)
+    {
+        return visitExpression(node, context);
+    }
+
+    protected R visitRowDataType(RowDataType node, C context)
+    {
+        return visitDataType(node, context);
+    }
+
+    protected R visitGenericDataType(GenericDataType node, C context)
+    {
+        return visitDataType(node, context);
+    }
+
+    protected R visitRowField(RowDataType.Field node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitDataTypeParameter(DataTypeParameter node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitNumericTypeParameter(NumericParameter node, C context)
+    {
+        return visitDataTypeParameter(node, context);
+    }
+
+    protected R visitTypeParameter(TypeParameter node, C context)
+    {
+        return visitDataTypeParameter(node, context);
+    }
+
+    protected R visitIntervalDataType(IntervalDayTimeDataType node, C context)
+    {
+        return visitDataType(node, context);
+    }
+
+    protected R visitDateTimeType(DateTimeDataType node, C context)
+    {
+        return visitDataType(node, context);
     }
 }

@@ -19,8 +19,6 @@ import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.QualifiedObjectName;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.security.AccessControl;
-import io.prestosql.spi.PrestoException;
-import io.prestosql.sql.analyzer.SemanticException;
 import io.prestosql.sql.tree.Comment;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.transaction.TransactionManager;
@@ -31,7 +29,8 @@ import java.util.Optional;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static io.prestosql.metadata.MetadataUtil.createQualifiedObjectName;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.MISSING_TABLE;
+import static io.prestosql.spi.StandardErrorCode.TABLE_NOT_FOUND;
+import static io.prestosql.sql.analyzer.SemanticExceptions.semanticException;
 
 public class CommentTask
         implements DataDefinitionTask<Comment>
@@ -51,15 +50,15 @@ public class CommentTask
             QualifiedObjectName tableName = createQualifiedObjectName(session, statement, statement.getName());
             Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
             if (!tableHandle.isPresent()) {
-                throw new SemanticException(MISSING_TABLE, statement, "Table '%s' does not exist", tableName);
+                throw semanticException(TABLE_NOT_FOUND, statement, "Table does not exist: %s", tableName);
             }
 
-            accessControl.checkCanSetTableComment(session.getRequiredTransactionId(), session.getIdentity(), tableName);
+            accessControl.checkCanSetTableComment(session.toSecurityContext(), tableName);
 
             metadata.setTableComment(session, tableHandle.get(), statement.getComment());
         }
         else {
-            throw new PrestoException(NOT_SUPPORTED, "Unsupported comment type: " + statement.getType());
+            throw semanticException(NOT_SUPPORTED, statement, "Unsupported comment type: %s", statement.getType());
         }
 
         return immediateFuture(null);

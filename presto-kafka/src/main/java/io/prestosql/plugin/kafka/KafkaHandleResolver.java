@@ -17,15 +17,11 @@ import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorHandleResolver;
 import io.prestosql.spi.connector.ConnectorSplit;
 import io.prestosql.spi.connector.ConnectorTableHandle;
-import io.prestosql.spi.connector.ConnectorTableLayoutHandle;
 import io.prestosql.spi.connector.ConnectorTransactionHandle;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
-/**
- * Kafka specific {@link io.prestosql.spi.connector.ConnectorHandleResolver} implementation.
- */
 public class KafkaHandleResolver
         implements ConnectorHandleResolver
 {
@@ -45,12 +41,6 @@ public class KafkaHandleResolver
     public Class<? extends ConnectorSplit> getSplitClass()
     {
         return KafkaSplit.class;
-    }
-
-    @Override
-    public Class<? extends ConnectorTableLayoutHandle> getTableLayoutHandleClass()
-    {
-        return KafkaTableLayoutHandle.class;
     }
 
     @Override
@@ -78,12 +68,5 @@ public class KafkaHandleResolver
         requireNonNull(split, "split is null");
         checkArgument(split instanceof KafkaSplit, "split is not an instance of KafkaSplit");
         return (KafkaSplit) split;
-    }
-
-    static KafkaTableLayoutHandle convertLayout(ConnectorTableLayoutHandle layout)
-    {
-        requireNonNull(layout, "layout is null");
-        checkArgument(layout instanceof KafkaTableLayoutHandle, "layout is not an instance of KafkaTableLayoutHandle");
-        return (KafkaTableLayoutHandle) layout;
     }
 }

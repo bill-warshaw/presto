@@ -16,12 +16,18 @@ package io.prestosql.plugin.jdbc;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.SchemaTableName;
+import io.prestosql.spi.predicate.TupleDomain;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 
 import static java.util.Objects.requireNonNull;
 
@@ -29,21 +35,38 @@ public final class JdbcTableHandle
         implements ConnectorTableHandle
 {
     private final SchemaTableName schemaTableName;
+
+    // catalog, schema and table names are reported by the remote database
     private final String catalogName;
     private final String schemaName;
     private final String tableName;
+    private final Optional<List<JdbcColumnHandle>> columns;
+    private final TupleDomain<ColumnHandle> constraint;
+    private final OptionalLong limit;
+
+    public JdbcTableHandle(SchemaTableName schemaTableName, @Nullable String catalogName, @Nullable String schemaName, String tableName)
+    {
+        this(schemaTableName, catalogName, schemaName, tableName, Optional.empty(), TupleDomain.all(), OptionalLong.empty());
+    }
 
     @JsonCreator
     public JdbcTableHandle(
             @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
             @JsonProperty("catalogName") @Nullable String catalogName,
             @JsonProperty("schemaName") @Nullable String schemaName,
-            @JsonProperty("tableName") String tableName)
+            @JsonProperty("tableName") String tableName,
+            @JsonProperty("columns") Optional<List<JdbcColumnHandle>> columns,
+            @JsonProperty("constraint") TupleDomain<ColumnHandle> constraint,
+            @JsonProperty("limit") OptionalLong limit)
     {
         this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
         this.catalogName = catalogName;
         this.schemaName = schemaName;
         this.tableName = requireNonNull(tableName, "tableName is null");
+        requireNonNull(columns, "columns is null");
+        this.columns = columns.map(ImmutableList::copyOf);
+        this.constraint = requireNonNull(constraint, "constraint is null");
+        this.limit = requireNonNull(limit, "limit is null");
     }
 
     @JsonProperty
@@ -72,6 +95,24 @@ public final class JdbcTableHandle
         return tableName;
     }
 
+    @JsonProperty
+    public Optional<List<JdbcColumnHandle>> getColumns()
+    {
+        return columns;
+    }
+
+    @JsonProperty
+    public TupleDomain<ColumnHandle> getConstraint()
+    {
+        return constraint;
+    }
+
+    @JsonProperty
+    public OptionalLong getLimit()
+    {
+        return limit;
+    }
+
     @Override
     public boolean equals(Object obj)
     {
@@ -82,18 +123,26 @@ public final class JdbcTableHandle
             return false;
         }
         JdbcTableHandle o = (JdbcTableHandle) obj;
-        return Objects.equals(this.schemaTableName, o.schemaTableName);
+        return Objects.equals(this.schemaTableName, o.schemaTableName) &&
+                Objects.equals(this.columns, o.columns) &&
+                Objects.equals(this.constraint, o.constraint) &&
+                Objects.equals(this.limit, o.limit);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(schemaTableName);
+        return Objects.hash(schemaTableName, columns, constraint, limit);
     }
 
     @Override
     public String toString()
     {
-        return Joiner.on(":").useForNull("null").join(schemaTableName, catalogName, schemaName, tableName);
+        StringBuilder builder = new StringBuilder();
+        builder.append(schemaTableName).append(" ");
+        Joiner.on(".").skipNulls().appendTo(builder, catalogName, schemaName, tableName);
+        columns.ifPresent(value -> builder.append(" columns=").append(value));
+        limit.ifPresent(value -> builder.append(" limit=").append(value));
+        return builder.toString();
     }
 }

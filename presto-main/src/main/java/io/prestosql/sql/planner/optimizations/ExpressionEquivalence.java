@@ -21,8 +21,10 @@ import com.google.common.collect.Ordering;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.type.Type;
+import io.prestosql.sql.planner.DesugarArrayConstructorRewriter;
+import io.prestosql.sql.planner.DesugarLikeRewriter;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.TypeProvider;
@@ -32,6 +34,8 @@ import io.prestosql.sql.relational.InputReferenceExpression;
 import io.prestosql.sql.relational.LambdaDefinitionExpression;
 import io.prestosql.sql.relational.RowExpression;
 import io.prestosql.sql.relational.RowExpressionVisitor;
+import io.prestosql.sql.relational.SpecialForm;
+import io.prestosql.sql.relational.SpecialForm.Form;
 import io.prestosql.sql.relational.VariableReferenceExpression;
 import io.prestosql.sql.tree.Expression;
 
@@ -44,9 +48,7 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.prestosql.metadata.FunctionKind.SCALAR;
-import static io.prestosql.metadata.FunctionRegistry.mangleOperatorName;
-import static io.prestosql.metadata.Signature.internalScalarFunction;
+import static io.prestosql.metadata.Signature.mangleOperatorName;
 import static io.prestosql.spi.function.OperatorType.EQUAL;
 import static io.prestosql.spi.function.OperatorType.GREATER_THAN;
 import static io.prestosql.spi.function.OperatorType.GREATER_THAN_OR_EQUAL;
@@ -55,6 +57,8 @@ import static io.prestosql.spi.function.OperatorType.LESS_THAN;
 import static io.prestosql.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.prestosql.spi.function.OperatorType.NOT_EQUAL;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
+import static io.prestosql.sql.relational.SpecialForm.Form.AND;
+import static io.prestosql.sql.relational.SpecialForm.Form.OR;
 import static io.prestosql.sql.relational.SqlToRowExpressionTranslator.translate;
 import static java.lang.Integer.min;
 import static java.util.Objects.requireNonNull;
@@ -62,14 +66,15 @@ import static java.util.Objects.requireNonNull;
 public class ExpressionEquivalence
 {
     private static final Ordering<RowExpression> ROW_EXPRESSION_ORDERING = Ordering.from(new RowExpressionComparator());
-    private static final CanonicalizationVisitor CANONICALIZATION_VISITOR = new CanonicalizationVisitor();
     private final Metadata metadata;
     private final TypeAnalyzer typeAnalyzer;
+    private final CanonicalizationVisitor canonicalizationVisitor;
 
     public ExpressionEquivalence(Metadata metadata, TypeAnalyzer typeAnalyzer)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
+        this.canonicalizationVisitor = new CanonicalizationVisitor(metadata);
     }
 
     public boolean areExpressionsEquivalent(Session session, Expression leftExpression, Expression rightExpression, TypeProvider types)
@@ -83,21 +88,22 @@ public class ExpressionEquivalence
         RowExpression leftRowExpression = toRowExpression(session, leftExpression, symbolInput, types);
         RowExpression rightRowExpression = toRowExpression(session, rightExpression, symbolInput, types);
 
-        RowExpression canonicalizedLeft = leftRowExpression.accept(CANONICALIZATION_VISITOR, null);
-        RowExpression canonicalizedRight = rightRowExpression.accept(CANONICALIZATION_VISITOR, null);
+        RowExpression canonicalizedLeft = leftRowExpression.accept(canonicalizationVisitor, null);
+        RowExpression canonicalizedRight = rightRowExpression.accept(canonicalizationVisitor, null);
 
         return canonicalizedLeft.equals(canonicalizedRight);
     }
 
     private RowExpression toRowExpression(Session session, Expression expression, Map<Symbol, Integer> symbolInput, TypeProvider types)
     {
+        expression = DesugarLikeRewriter.rewrite(expression, session, metadata, typeAnalyzer, types);
+        expression = DesugarArrayConstructorRewriter.rewrite(expression, session, metadata, typeAnalyzer, types);
+
         return translate(
                 expression,
-                SCALAR,
                 typeAnalyzer.getTypes(session, types, expression),
                 symbolInput,
-                metadata.getFunctionRegistry(),
-                metadata.getTypeManager(),
+                metadata,
                 session,
                 false);
     }
@@ -105,21 +111,59 @@ public class ExpressionEquivalence
     private static class CanonicalizationVisitor
             implements RowExpressionVisitor<RowExpression, Void>
     {
+        private final Metadata metadata;
+
+        public CanonicalizationVisitor(Metadata metadata)
+        {
+            this.metadata = requireNonNull(metadata, "metadata is null");
+        }
+
         @Override
         public RowExpression visitCall(CallExpression call, Void context)
         {
             call = new CallExpression(
-                    call.getSignature(),
+                    call.getResolvedFunction(),
                     call.getType(),
                     call.getArguments().stream()
                             .map(expression -> expression.accept(this, context))
                             .collect(toImmutableList()));
 
-            String callName = call.getSignature().getName();
+            String callName = call.getResolvedFunction().getSignature().getName();
 
-            if (callName.equals("AND") || callName.equals("OR")) {
+            if (callName.equals(mangleOperatorName(EQUAL)) || callName.equals(mangleOperatorName(NOT_EQUAL)) || callName.equals(mangleOperatorName(IS_DISTINCT_FROM))) {
+                // sort arguments
+                return new CallExpression(
+                        call.getResolvedFunction(),
+                        call.getType(),
+                        ROW_EXPRESSION_ORDERING.sortedCopy(call.getArguments()));
+            }
+
+            if (callName.equals(mangleOperatorName(GREATER_THAN)) || callName.equals(mangleOperatorName(GREATER_THAN_OR_EQUAL))) {
+                // convert greater than to less than
+                ResolvedFunction newFunction = metadata.resolveOperator(
+                        callName.equals(mangleOperatorName(GREATER_THAN)) ? LESS_THAN : LESS_THAN_OR_EQUAL,
+                        swapPair(call.getResolvedFunction().getSignature().getArgumentTypes()).stream()
+                                .map(metadata::getType)
+                                .collect(toImmutableList()));
+                return new CallExpression(newFunction, call.getType(), swapPair(call.getArguments()));
+            }
+
+            return call;
+        }
+
+        @Override
+        public RowExpression visitSpecialForm(SpecialForm specialForm, Void context)
+        {
+            specialForm = new SpecialForm(
+                    specialForm.getForm(),
+                    specialForm.getType(),
+                    specialForm.getArguments().stream()
+                            .map(expression -> expression.accept(this, context))
+                            .collect(toImmutableList()));
+
+            if (specialForm.getForm() == AND || specialForm.getForm() == OR) {
                 // if we have nested calls (of the same type) flatten them
-                List<RowExpression> flattenedArguments = flattenNestedCallArgs(call);
+                List<RowExpression> flattenedArguments = flattenNestedCallArgs(specialForm);
 
                 // only consider distinct arguments
                 Set<RowExpression> distinctArguments = ImmutableSet.copyOf(flattenedArguments);
@@ -130,52 +174,20 @@ public class ExpressionEquivalence
                 // canonicalize the argument order (i.e., sort them)
                 List<RowExpression> sortedArguments = ROW_EXPRESSION_ORDERING.sortedCopy(distinctArguments);
 
-                return new CallExpression(
-                        internalScalarFunction(
-                                callName,
-                                BOOLEAN.getTypeSignature(),
-                                distinctArguments.stream()
-                                        .map(RowExpression::getType)
-                                        .map(Type::getTypeSignature)
-                                        .collect(toImmutableList())),
-                        BOOLEAN,
-                        sortedArguments);
+                return new SpecialForm(specialForm.getForm(), BOOLEAN, sortedArguments);
             }
 
-            if (callName.equals(mangleOperatorName(EQUAL)) || callName.equals(mangleOperatorName(NOT_EQUAL)) || callName.equals(mangleOperatorName(IS_DISTINCT_FROM))) {
-                // sort arguments
-                return new CallExpression(
-                        call.getSignature(),
-                        call.getType(),
-                        ROW_EXPRESSION_ORDERING.sortedCopy(call.getArguments()));
-            }
-
-            if (callName.equals(mangleOperatorName(GREATER_THAN)) || callName.equals(mangleOperatorName(GREATER_THAN_OR_EQUAL))) {
-                // convert greater than to less than
-                return new CallExpression(
-                        new Signature(
-                                callName.equals(mangleOperatorName(GREATER_THAN)) ? mangleOperatorName(LESS_THAN) : mangleOperatorName(LESS_THAN_OR_EQUAL),
-                                SCALAR,
-                                call.getSignature().getTypeVariableConstraints(),
-                                call.getSignature().getLongVariableConstraints(),
-                                call.getSignature().getReturnType(),
-                                swapPair(call.getSignature().getArgumentTypes()),
-                                false),
-                        call.getType(),
-                        swapPair(call.getArguments()));
-            }
-
-            return call;
+            return specialForm;
         }
 
-        public static List<RowExpression> flattenNestedCallArgs(CallExpression call)
+        public static List<RowExpression> flattenNestedCallArgs(SpecialForm specialForm)
         {
-            String callName = call.getSignature().getName();
+            Form form = specialForm.getForm();
             ImmutableList.Builder<RowExpression> newArguments = ImmutableList.builder();
-            for (RowExpression argument : call.getArguments()) {
-                if (argument instanceof CallExpression && callName.equals(((CallExpression) argument).getSignature().getName())) {
-                    // same call type, so flatten the args
-                    newArguments.addAll(flattenNestedCallArgs((CallExpression) argument));
+            for (RowExpression argument : specialForm.getArguments()) {
+                if (argument instanceof SpecialForm && form == ((SpecialForm) argument).getForm()) {
+                    // same special form type, so flatten the args
+                    newArguments.addAll(flattenNestedCallArgs((SpecialForm) argument));
                 }
                 else {
                     newArguments.add(argument);
@@ -227,8 +239,17 @@ public class ExpressionEquivalence
                 CallExpression leftCall = (CallExpression) left;
                 CallExpression rightCall = (CallExpression) right;
                 return ComparisonChain.start()
-                        .compare(leftCall.getSignature().toString(), rightCall.getSignature().toString())
+                        .compare(leftCall.getResolvedFunction().toString(), rightCall.getResolvedFunction().toString())
                         .compare(leftCall.getArguments(), rightCall.getArguments(), argumentComparator)
+                        .result();
+            }
+
+            if (left instanceof SpecialForm) {
+                SpecialForm leftForm = (SpecialForm) left;
+                SpecialForm rightForm = (SpecialForm) right;
+                return ComparisonChain.start()
+                        .compare(leftForm.getForm(), rightForm.getForm())
+                        .compare(leftForm.getArguments(), rightForm.getArguments(), argumentComparator)
                         .result();
             }
 

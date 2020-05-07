@@ -17,12 +17,12 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.prestosql.annotation.UsedByGeneratedCode;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlOperator;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 
 import java.lang.invoke.MethodHandle;
 
@@ -32,9 +32,11 @@ import static io.prestosql.operator.scalar.ScalarFunctionImplementation.Argument
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.function.OperatorType.SUBSCRIPT;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.BigintType.BIGINT;
+import static io.prestosql.spi.type.TypeSignature.arrayType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.lang.Math.toIntExact;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class ArraySubscriptOperator
@@ -53,12 +55,13 @@ public class ArraySubscriptOperator
         super(SUBSCRIPT,
                 ImmutableList.of(typeVariable("E")),
                 ImmutableList.of(),
-                parseTypeSignature("E"),
-                ImmutableList.of(parseTypeSignature("array(E)"), parseTypeSignature("bigint")));
+                new TypeSignature("E"),
+                ImmutableList.of(arrayType(new TypeSignature("E")), BIGINT.getTypeSignature()),
+                true);
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         checkArgument(boundVariables.getTypeVariables().size() == 1, "Expected one type, got %s", boundVariables.getTypeVariables());
         Type elementType = boundVariables.getTypeVariable("E");
@@ -86,8 +89,7 @@ public class ArraySubscriptOperator
                 ImmutableList.of(
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                methodHandle,
-                isDeterministic());
+                methodHandle);
     }
 
     @UsedByGeneratedCode
@@ -156,7 +158,7 @@ public class ArraySubscriptOperator
             throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "SQL array indices start at 1");
         }
         if (index < 0) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Array subscript is negative");
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Array subscript is negative: " + index);
         }
     }
 
@@ -164,7 +166,7 @@ public class ArraySubscriptOperator
     {
         checkArrayIndex(index);
         if (index > array.getPositionCount()) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Array subscript out of bounds");
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("Array subscript must be less than or equal to array length: %s > %s", index, array.getPositionCount()));
         }
     }
 }

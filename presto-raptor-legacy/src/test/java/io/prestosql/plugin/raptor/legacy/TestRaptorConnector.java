@@ -42,10 +42,11 @@ import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.type.SqlDate;
 import io.prestosql.spi.type.SqlTimestamp;
 import io.prestosql.spi.type.Type;
+import io.prestosql.spi.type.TypeManager;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.TestingConnectorSession;
 import io.prestosql.testing.TestingNodeManager;
-import io.prestosql.type.TypeRegistry;
+import io.prestosql.type.InternalTypeManager;
 import org.joda.time.DateTimeZone;
 import org.skife.jdbi.v2.DBI;
 import org.skife.jdbi.v2.Handle;
@@ -55,10 +56,11 @@ import org.testng.annotations.Test;
 
 import java.io.File;
 import java.util.Collection;
-import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.plugin.raptor.legacy.RaptorTableProperties.TEMPORAL_COLUMN_PROPERTY;
 import static io.prestosql.plugin.raptor.legacy.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static io.prestosql.plugin.raptor.legacy.metadata.TestDatabaseShardManager.createShardManager;
@@ -71,7 +73,6 @@ import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.testing.TestingConnectorSession.SESSION;
 import static io.prestosql.util.DateTimeUtils.parseDate;
 import static io.prestosql.util.DateTimeUtils.parseTimestampLiteral;
-import static java.util.Locale.ENGLISH;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -86,11 +87,10 @@ public class TestRaptorConnector
 
     @BeforeMethod
     public void setup()
-            throws Exception
     {
-        TypeRegistry typeRegistry = new TypeRegistry();
-        DBI dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
-        dbi.registerMapper(new TableColumn.Mapper(typeRegistry));
+        TypeManager typeManager = new InternalTypeManager(createTestMetadataManager());
+        DBI dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime() + ThreadLocalRandom.current().nextLong());
+        dbi.registerMapper(new TableColumn.Mapper(typeManager));
         dummyHandle = dbi.open();
         metadataDao = dbi.onDemand(MetadataDao.class);
         createTablesWithRetry(dbi);
@@ -114,7 +114,7 @@ public class TestRaptorConnector
                         config),
                 new RaptorNodePartitioningProvider(nodeSupplier),
                 new RaptorSessionProperties(config),
-                new RaptorTableProperties(typeRegistry),
+                new RaptorTableProperties(typeManager),
                 ImmutableSet.of(),
                 new AllowAllAccessControl(),
                 dbi);
@@ -214,16 +214,10 @@ public class TestRaptorConnector
     private void assertSplitShard(Type temporalType, String min, String max, String userTimeZone, int expectedSplits)
             throws Exception
     {
-        ConnectorSession session = new TestingConnectorSession(
-                "user",
-                Optional.of("test"),
-                Optional.empty(),
-                getTimeZoneKey(userTimeZone),
-                ENGLISH,
-                System.currentTimeMillis(),
-                new RaptorSessionProperties(new StorageManagerConfig()).getSessionProperties(),
-                ImmutableMap.of(),
-                true);
+        ConnectorSession session = TestingConnectorSession.builder()
+                .setTimeZoneKey(getTimeZoneKey(userTimeZone))
+                .setPropertyMetadata(new RaptorSessionProperties(new StorageManagerConfig()).getSessionProperties())
+                .build();
 
         ConnectorTransactionHandle transaction = connector.beginTransaction(READ_COMMITTED, false);
         connector.getMetadata(transaction).createTable(

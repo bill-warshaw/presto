@@ -14,6 +14,7 @@
 package io.prestosql.spi.type;
 
 import io.airlift.slice.Slice;
+import io.airlift.slice.SliceUtf8;
 import io.airlift.slice.Slices;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
@@ -22,6 +23,7 @@ import io.prestosql.spi.connector.ConnectorSession;
 import java.util.Objects;
 import java.util.Optional;
 
+import static java.lang.Character.MAX_CODE_POINT;
 import static java.util.Collections.singletonList;
 
 public final class VarcharType
@@ -47,7 +49,7 @@ public final class VarcharType
 
     public static TypeSignature getParametrizedVarcharSignature(String param)
     {
-        return new TypeSignature(StandardTypes.VARCHAR, TypeSignatureParameter.of(param));
+        return new TypeSignature(StandardTypes.VARCHAR, TypeSignatureParameter.typeVariable(param));
     }
 
     private final int length;
@@ -57,7 +59,7 @@ public final class VarcharType
         super(
                 new TypeSignature(
                         StandardTypes.VARCHAR,
-                        singletonList(TypeSignatureParameter.of((long) length))),
+                        singletonList(TypeSignatureParameter.numericParameter((long) length))),
                 Slice.class);
 
         if (length < 0) {
@@ -135,6 +137,27 @@ public final class VarcharType
     }
 
     @Override
+    public Optional<Range> getRange()
+    {
+        if (length > 100) {
+            // The max/min values may be materialized in the plan, so we don't want them to be too large.
+            // Range comparison against large values are usually nonsensical, too, so no need to support them
+            // beyond a certain size. They specific choice above is arbitrary and can be adjusted if needed.
+            return Optional.empty();
+        }
+
+        int codePointSize = SliceUtf8.lengthOfCodePoint(MAX_CODE_POINT);
+
+        Slice max = Slices.allocate(codePointSize * length);
+        int position = 0;
+        for (int i = 0; i < length; i++) {
+            position += SliceUtf8.setCodePointAt(MAX_CODE_POINT, max, position);
+        }
+
+        return Optional.of(new Range(Slices.EMPTY_SLICE, max));
+    }
+
+    @Override
     public void appendTo(Block block, int position, BlockBuilder blockBuilder)
     {
         if (block.isNull(position)) {
@@ -194,7 +217,7 @@ public final class VarcharType
     public String getDisplayName()
     {
         if (length == UNBOUNDED_LENGTH) {
-            return getTypeSignature().getBase();
+            return getBaseName();
         }
 
         return getTypeSignature().toString();

@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
 
 public class SplitManager
@@ -54,7 +55,7 @@ public class SplitManager
 
     public void addConnectorSplitManager(CatalogName catalogName, ConnectorSplitManager connectorSplitManager)
     {
-        requireNonNull(catalogName, "connectorId is null");
+        requireNonNull(catalogName, "catalogName is null");
         requireNonNull(connectorSplitManager, "connectorSplitManager is null");
         checkState(splitManagers.putIfAbsent(catalogName, connectorSplitManager) == null, "SplitManager for connector '%s' is already registered", catalogName);
     }
@@ -86,6 +87,10 @@ public class SplitManager
         }
 
         SplitSource splitSource = new ConnectorAwareSplitSource(catalogName, source);
+        int minScheduleSplitBatchSize = this.minScheduleSplitBatchSize;
+        if (splitSource.getMinScheduleSplitBatchSize().isPresent()) {
+            minScheduleSplitBatchSize = min(minScheduleSplitBatchSize, splitSource.getMinScheduleSplitBatchSize().get());
+        }
         if (minScheduleSplitBatchSize > 1) {
             splitSource = new BufferingSplitSource(splitSource, minScheduleSplitBatchSize);
         }

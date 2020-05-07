@@ -31,9 +31,9 @@ import io.airlift.bytecode.control.ForLoop;
 import io.airlift.bytecode.control.IfStatement;
 import io.airlift.bytecode.expression.BytecodeExpression;
 import io.airlift.bytecode.instruction.LabelNode;
+import io.airlift.jmx.CacheStatsMBean;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
-import io.prestosql.metadata.FunctionRegistry;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.JoinHash;
 import io.prestosql.operator.JoinHashSupplier;
@@ -47,9 +47,13 @@ import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.BigintType;
-import io.prestosql.spi.type.StandardTypes;
+import io.prestosql.spi.type.CharType;
+import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.Type;
+import io.prestosql.spi.type.VarbinaryType;
+import io.prestosql.spi.type.VarcharType;
 import io.prestosql.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
+import io.prestosql.type.JsonType;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import org.openjdk.jol.info.ClassLayout;
 import org.weakref.jmx.Managed;
@@ -89,7 +93,7 @@ import static java.util.Objects.requireNonNull;
 
 public class JoinCompiler
 {
-    private final FunctionRegistry registry;
+    private final Metadata metadata;
 
     private final LoadingCache<CacheKey, LookupSourceSupplierFactory> lookupSourceFactories = CacheBuilder.newBuilder()
             .recordStats()
@@ -111,7 +115,7 @@ public class JoinCompiler
     @Inject
     public JoinCompiler(Metadata metadata)
     {
-        this.registry = requireNonNull(metadata, "metadata is null").getFunctionRegistry();
+        this.metadata = requireNonNull(metadata, "metadata is null");
     }
 
     @Managed
@@ -237,7 +241,8 @@ public class JoinCompiler
         return defineClass(classDefinition, PagesHashStrategy.class, callSiteBinder.getBindings(), getClass().getClassLoader());
     }
 
-    private static void generateConstructor(ClassDefinition classDefinition,
+    private static void generateConstructor(
+            ClassDefinition classDefinition,
             List<Integer> joinChannels,
             FieldDefinition sizeField,
             FieldDefinition instanceSizeField,
@@ -677,21 +682,18 @@ public class JoinCompiler
             //
             // The plan is to allow scalar function to optionally provide an additional implementation using Block+position calling convention.
             // At that point, we'll be able to fully deprecate Type.equalTo (and friends) and remove this hack.
-            if (type.getJavaType().equals(Slice.class)) {
-                switch (type.getTypeSignature().getBase()) {
-                    case StandardTypes.CHAR:
-                    case StandardTypes.IPADDRESS:
-                    case StandardTypes.JSON:
-                    case StandardTypes.DECIMAL:
-                    case StandardTypes.VARBINARY:
-                    case StandardTypes.VARCHAR:
-                        body.append(new IfStatement()
-                                .condition(typeEquals(constantType(callSiteBinder, type), leftBlock, leftBlockPosition, rightBlock, rightPosition))
-                                .ifFalse(constantFalse().ret()));
-                        continue;
-                }
+            if (type.getJavaType().equals(Slice.class) && (
+                    type instanceof CharType ||
+                    type instanceof JsonType ||
+                    type instanceof DecimalType ||
+                    type instanceof VarbinaryType ||
+                    type instanceof VarcharType)) {
+                body.append(new IfStatement()
+                        .condition(typeEquals(constantType(callSiteBinder, type), leftBlock, leftBlockPosition, rightBlock, rightPosition))
+                        .ifFalse(constantFalse().ret()));
+                continue;
             }
-            ScalarFunctionImplementation operator = registry.getScalarFunctionImplementation(registry.resolveOperator(OperatorType.IS_DISTINCT_FROM, ImmutableList.of(type, type)));
+            ScalarFunctionImplementation operator = metadata.getScalarFunctionImplementation(metadata.resolveOperator(OperatorType.IS_DISTINCT_FROM, ImmutableList.of(type, type)));
             Binding binding = callSiteBinder.bind(operator.getMethodHandle());
             List<BytecodeNode> argumentsBytecode = new ArrayList<>();
             argumentsBytecode.add(generateInputReference(callSiteBinder, scope, type, leftBlock, leftBlockPosition));

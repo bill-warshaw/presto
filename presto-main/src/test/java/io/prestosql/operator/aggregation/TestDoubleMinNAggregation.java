@@ -14,9 +14,8 @@
 package io.prestosql.operator.aggregation;
 
 import com.google.common.collect.ImmutableList;
-import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.Block;
-import io.prestosql.spi.type.StandardTypes;
+import io.prestosql.spi.type.Type;
 import org.testng.annotations.Test;
 
 import java.util.Arrays;
@@ -26,14 +25,14 @@ import java.util.PriorityQueue;
 import static io.prestosql.block.BlockAssertions.createDoubleSequenceBlock;
 import static io.prestosql.block.BlockAssertions.createDoublesBlock;
 import static io.prestosql.block.BlockAssertions.createLongRepeatBlock;
-import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static org.testng.Assert.assertEquals;
+import static io.prestosql.spi.type.BigintType.BIGINT;
+import static io.prestosql.spi.type.DoubleType.DOUBLE;
 
 public class TestDoubleMinNAggregation
         extends AbstractTestAggregationFunction
 {
     @Override
-    public Block[] getSequenceBlocks(int start, int length)
+    protected Block[] getSequenceBlocks(int start, int length)
     {
         return new Block[] {createDoubleSequenceBlock(start, start + length), createLongRepeatBlock(2, length)};
     }
@@ -45,13 +44,13 @@ public class TestDoubleMinNAggregation
     }
 
     @Override
-    protected List<String> getFunctionParameterTypes()
+    protected List<Type> getFunctionParameterTypes()
     {
-        return ImmutableList.of(StandardTypes.DOUBLE, StandardTypes.BIGINT);
+        return ImmutableList.of(DOUBLE, BIGINT);
     }
 
     @Override
-    public Object getExpectedValue(int start, int length)
+    protected Object getExpectedValue(int start, int length)
     {
         if (length == 0) {
             return null;
@@ -72,12 +71,8 @@ public class TestDoubleMinNAggregation
 
     private void testInvalidAggregation(Double[] x, int n)
     {
-        try {
-            testAggregation(new long[] {}, createDoublesBlock(x), createLongRepeatBlock(n, x.length));
-        }
-        catch (PrestoException e) {
-            assertEquals(e.getErrorCode().getName(), INVALID_FUNCTION_ARGUMENT.name());
-        }
+        assertInvalidAggregation(() ->
+                testAggregation(new long[] {}, createDoublesBlock(x), createLongRepeatBlock(n, x.length)));
     }
 
     private void testCustomAggregation(Double[] values, int n)

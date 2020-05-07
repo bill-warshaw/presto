@@ -33,13 +33,13 @@ import io.prestosql.sql.planner.TypeProvider;
 import io.prestosql.sql.planner.optimizations.StreamPropertyDerivations.StreamProperties;
 import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.ApplyNode;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
 import io.prestosql.sql.planner.plan.ExchangeNode;
 import io.prestosql.sql.planner.plan.ExplainAnalyzeNode;
 import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OutputNode;
@@ -65,6 +65,7 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.SystemSessionProperties.getTaskConcurrency;
@@ -90,6 +91,7 @@ import static io.prestosql.sql.planner.plan.ExchangeNode.gatheringExchange;
 import static io.prestosql.sql.planner.plan.ExchangeNode.mergingExchange;
 import static io.prestosql.sql.planner.plan.ExchangeNode.partitionedExchange;
 import static java.util.Objects.requireNonNull;
+import static java.util.function.Predicate.isEqual;
 import static java.util.stream.Collectors.toList;
 
 public class AddLocalExchanges
@@ -141,7 +143,7 @@ public class AddLocalExchanges
         }
 
         @Override
-        public PlanWithProperties visitLateralJoin(LateralJoinNode node, StreamPreferredProperties parentPreferences)
+        public PlanWithProperties visitCorrelatedJoin(CorrelatedJoinNode node, StreamPreferredProperties parentPreferences)
         {
             throw new IllegalStateException("Unexpected node: " + node.getClass().getName());
         }
@@ -212,7 +214,7 @@ public class AddLocalExchanges
         @Override
         public PlanWithProperties visitTopN(TopNNode node, StreamPreferredProperties parentPreferences)
         {
-            if (node.getStep().equals(TopNNode.Step.PARTIAL)) {
+            if (node.getStep() == TopNNode.Step.PARTIAL) {
                 return planAndEnforceChildren(
                         node,
                         parentPreferences.withoutPreference().withDefaultParallelism(session),
@@ -230,6 +232,10 @@ public class AddLocalExchanges
         @Override
         public PlanWithProperties visitLimit(LimitNode node, StreamPreferredProperties parentPreferences)
         {
+            if (node.isWithTies()) {
+                throw new IllegalStateException("Unexpected node: LimitNode with ties");
+            }
+
             if (node.isPartial()) {
                 return planAndEnforceChildren(
                         node,
@@ -279,13 +285,13 @@ public class AddLocalExchanges
         {
             checkState(node.getStep() == AggregationNode.Step.SINGLE, "step of aggregation is expected to be SINGLE, but it is %s", node.getStep());
 
-            if (node.hasSingleNodeExecutionPreference(metadata.getFunctionRegistry())) {
+            if (node.hasSingleNodeExecutionPreference(metadata)) {
                 return planAndEnforceChildren(node, singleStream(), defaultParallelism(session));
             }
 
             List<Symbol> groupingKeys = node.getGroupingKeys();
             if (node.hasDefaultOutput()) {
-                checkState(node.isDecomposable(metadata.getFunctionRegistry()));
+                checkState(node.isDecomposable(metadata));
 
                 // Put fixed local exchange directly below final aggregation to ensure that final and partial aggregations are separated by exchange (in a local runner mode)
                 // This is required so that default outputs from multiple instances of partial aggregations are passed to a single final aggregation.
@@ -451,8 +457,15 @@ public class AddLocalExchanges
         @Override
         public PlanWithProperties visitRowNumber(RowNumberNode node, StreamPreferredProperties parentPreferences)
         {
-            // row number requires that all data be partitioned
-            StreamPreferredProperties requiredProperties = parentPreferences.withDefaultParallelism(session).withPartitioning(node.getPartitionBy());
+            StreamPreferredProperties requiredProperties;
+            if (node.isOrderSensitive()) {
+                // for an order sensitive RowNumberNode pass the orderSensitive context
+                verify(node.getPartitionBy().isEmpty(), "unexpected partitioning");
+                requiredProperties = singleStream().withOrderSensitivity();
+            }
+            else {
+                requiredProperties = parentPreferences.withDefaultParallelism(session).withPartitioning(node.getPartitionBy());
+            }
             return planAndEnforceChildren(node, requiredProperties, requiredProperties);
         }
 
@@ -478,9 +491,24 @@ public class AddLocalExchanges
         {
             StreamPreferredProperties requiredProperties;
             StreamPreferredProperties preferredProperties;
+            // TODO: add support for arbitrary partitioning in local exchanges
             if (getTaskWriterCount(session) > 1) {
-                requiredProperties = fixedParallelism();
-                preferredProperties = fixedParallelism();
+                boolean hasFixedHashDistribution = node.getPartitioningScheme()
+                        .map(scheme -> scheme.getPartitioning().getHandle())
+                        .filter(isEqual(FIXED_HASH_DISTRIBUTION))
+                        .isPresent();
+                if (!node.getPartitioningScheme().isPresent()) {
+                    requiredProperties = fixedParallelism();
+                    preferredProperties = fixedParallelism();
+                }
+                else if (hasFixedHashDistribution) {
+                    requiredProperties = exactlyPartitionedOn(node.getPartitioningScheme().get().getPartitioning().getColumns());
+                    preferredProperties = requiredProperties;
+                }
+                else {
+                    requiredProperties = singleStream();
+                    preferredProperties = defaultParallelism(session);
+                }
             }
             else {
                 requiredProperties = singleStream();
@@ -496,7 +524,7 @@ public class AddLocalExchanges
         @Override
         public PlanWithProperties visitExchange(ExchangeNode node, StreamPreferredProperties parentPreferences)
         {
-            checkArgument(node.getScope() != LOCAL, "AddLocalExchanges can not process a plan containing a local exchange");
+            checkArgument(node.getScope() != LOCAL, "AddLocalExchanges cannot process a plan containing a local exchange");
             // this node changes the input organization completely, so we do not pass through parent preferences
             if (node.getOrderingScheme().isPresent()) {
                 return planAndEnforceChildren(

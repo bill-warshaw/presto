@@ -29,14 +29,18 @@ import io.prestosql.sql.tree.AstVisitor;
 import io.prestosql.sql.tree.BooleanLiteral;
 import io.prestosql.sql.tree.DescribeOutput;
 import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.Limit;
 import io.prestosql.sql.tree.LongLiteral;
 import io.prestosql.sql.tree.Node;
+import io.prestosql.sql.tree.NodeRef;
 import io.prestosql.sql.tree.NullLiteral;
+import io.prestosql.sql.tree.Parameter;
 import io.prestosql.sql.tree.Row;
 import io.prestosql.sql.tree.Statement;
 import io.prestosql.sql.tree.StringLiteral;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static io.prestosql.sql.ParsingUtil.createParsingOptions;
@@ -59,10 +63,11 @@ final class DescribeOutputRewrite
             Optional<QueryExplainer> queryExplainer,
             Statement node,
             List<Expression> parameters,
+            Map<NodeRef<Parameter>, Expression> parameterLookup,
             AccessControl accessControl,
             WarningCollector warningCollector)
     {
-        return (Statement) new Visitor(session, parser, metadata, queryExplainer, parameters, accessControl, warningCollector).process(node, null);
+        return (Statement) new Visitor(session, parser, metadata, queryExplainer, parameters, parameterLookup, accessControl, warningCollector).process(node, null);
     }
 
     private static final class Visitor
@@ -73,6 +78,7 @@ final class DescribeOutputRewrite
         private final Metadata metadata;
         private final Optional<QueryExplainer> queryExplainer;
         private final List<Expression> parameters;
+        private final Map<NodeRef<Parameter>, Expression> parameterLookup;
         private final AccessControl accessControl;
         private final WarningCollector warningCollector;
 
@@ -82,6 +88,7 @@ final class DescribeOutputRewrite
                 Metadata metadata,
                 Optional<QueryExplainer> queryExplainer,
                 List<Expression> parameters,
+                Map<NodeRef<Parameter>, Expression> parameterLookup,
                 AccessControl accessControl,
                 WarningCollector warningCollector)
         {
@@ -90,6 +97,7 @@ final class DescribeOutputRewrite
             this.metadata = metadata;
             this.queryExplainer = queryExplainer;
             this.parameters = parameters;
+            this.parameterLookup = parameterLookup;
             this.accessControl = accessControl;
             this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
         }
@@ -100,15 +108,15 @@ final class DescribeOutputRewrite
             String sqlString = session.getPreparedStatement(node.getName().getValue());
             Statement statement = parser.createStatement(sqlString, createParsingOptions(session));
 
-            Analyzer analyzer = new Analyzer(session, metadata, parser, accessControl, queryExplainer, parameters, warningCollector);
+            Analyzer analyzer = new Analyzer(session, metadata, parser, accessControl, queryExplainer, parameters, parameterLookup, warningCollector);
             Analysis analysis = analyzer.analyze(statement, true);
 
-            Optional<String> limit = Optional.empty();
+            Optional<Node> limit = Optional.empty();
             Row[] rows = analysis.getRootScope().getRelationType().getVisibleFields().stream().map(field -> createDescribeOutputRow(field, analysis)).toArray(Row[]::new);
             if (rows.length == 0) {
                 NullLiteral nullLiteral = new NullLiteral();
                 rows = new Row[] {row(nullLiteral, nullLiteral, nullLiteral, nullLiteral, nullLiteral, nullLiteral, nullLiteral)};
-                limit = Optional.of("0");
+                limit = Optional.of(new Limit("0"));
             }
             return simpleQuery(
                     selectList(
@@ -123,6 +131,7 @@ final class DescribeOutputRewrite
                             values(rows),
                             "Statement Output",
                             ImmutableList.of("Column Name", "Catalog", "Schema", "Table", "Type", "Type Size", "Aliased")),
+                    Optional.empty(),
                     Optional.empty(),
                     Optional.empty(),
                     Optional.empty(),

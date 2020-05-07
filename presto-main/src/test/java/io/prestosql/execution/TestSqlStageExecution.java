@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.SettableFuture;
 import io.prestosql.client.NodeVersion;
 import io.prestosql.cost.StatsAndCosts;
-import io.prestosql.execution.TestSqlTaskManager.MockLocationFactory;
 import io.prestosql.execution.scheduler.SplitSchedulerStats;
 import io.prestosql.failuredetector.NoOpFailureDetector;
 import io.prestosql.metadata.InternalNode;
@@ -74,7 +73,7 @@ public class TestSqlStageExecution
         scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed("test-scheduledExecutor-%s"));
     }
 
-    @AfterClass
+    @AfterClass(alwaysRun = true)
     public void tearDown()
     {
         executor.shutdownNow();
@@ -102,8 +101,8 @@ public class TestSqlStageExecution
         StageId stageId = new StageId(new QueryId("query"), 0);
         SqlStageExecution stage = createSqlStageExecution(
                 stageId,
-                new MockLocationFactory().createStageLocation(stageId),
                 createExchangePlanFragment(),
+                ImmutableMap.of(),
                 new MockRemoteTaskFactory(executor, scheduledExecutor),
                 TEST_SESSION,
                 true,

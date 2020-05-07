@@ -18,6 +18,7 @@ import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ProtocolVersion;
 import com.datastax.driver.core.querybuilder.Insert;
 import com.google.common.collect.ImmutableList;
+import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import io.airlift.slice.Slice;
 import io.prestosql.spi.Page;
@@ -40,7 +41,10 @@ import java.util.function.Function;
 import static com.datastax.driver.core.querybuilder.QueryBuilder.bindMarker;
 import static com.datastax.driver.core.querybuilder.QueryBuilder.insertInto;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.primitives.Shorts.checkedCast;
+import static io.prestosql.plugin.cassandra.util.CassandraCqlUtils.ID_COLUMN_NAME;
+import static io.prestosql.plugin.cassandra.util.CassandraCqlUtils.validColumnName;
+import static io.prestosql.plugin.cassandra.util.CassandraCqlUtils.validSchemaName;
+import static io.prestosql.plugin.cassandra.util.CassandraCqlUtils.validTableName;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
@@ -66,7 +70,7 @@ public class CassandraPageSink
     private final CassandraSession cassandraSession;
     private final PreparedStatement insert;
     private final List<Type> columnTypes;
-    private final boolean generateUUID;
+    private final boolean generateUuid;
     private final Function<Long, Object> toCassandraDate;
 
     public CassandraPageSink(
@@ -76,14 +80,14 @@ public class CassandraPageSink
             String tableName,
             List<String> columnNames,
             List<Type> columnTypes,
-            boolean generateUUID)
+            boolean generateUuid)
     {
         this.cassandraSession = requireNonNull(cassandraSession, "cassandraSession");
         requireNonNull(schemaName, "schemaName is null");
         requireNonNull(tableName, "tableName is null");
         requireNonNull(columnNames, "columnNames is null");
         this.columnTypes = ImmutableList.copyOf(requireNonNull(columnTypes, "columnTypes is null"));
-        this.generateUUID = generateUUID;
+        this.generateUuid = generateUuid;
 
         if (protocolVersion.toInt() <= ProtocolVersion.V3.toInt()) {
             this.toCassandraDate = value -> DATE_FORMATTER.print(TimeUnit.DAYS.toMillis(value));
@@ -92,14 +96,14 @@ public class CassandraPageSink
             this.toCassandraDate = value -> LocalDate.fromDaysSinceEpoch(toIntExact(value));
         }
 
-        Insert insert = insertInto(schemaName, tableName);
-        if (generateUUID) {
-            insert.value("id", bindMarker());
+        Insert insert = insertInto(validSchemaName(schemaName), validTableName(tableName));
+        if (generateUuid) {
+            insert.value(ID_COLUMN_NAME, bindMarker());
         }
         for (int i = 0; i < columnNames.size(); i++) {
             String columnName = columnNames.get(i);
             checkArgument(columnName != null, "columnName is null at position: %s", i);
-            insert.value(columnName, bindMarker());
+            insert.value(validColumnName(columnName), bindMarker());
         }
         this.insert = cassandraSession.prepare(insert);
     }
@@ -109,7 +113,7 @@ public class CassandraPageSink
     {
         for (int position = 0; position < page.getPositionCount(); position++) {
             List<Object> values = new ArrayList<>(columnTypes.size() + 1);
-            if (generateUUID) {
+            if (generateUuid) {
                 values.add(UUID.randomUUID());
             }
 
@@ -139,7 +143,7 @@ public class CassandraPageSink
             values.add(toIntExact(type.getLong(block, position)));
         }
         else if (SMALLINT.equals(type)) {
-            values.add(checkedCast(type.getLong(block, position)));
+            values.add(Shorts.checkedCast(type.getLong(block, position)));
         }
         else if (TINYINT.equals(type)) {
             values.add(SignedBytes.checkedCast(type.getLong(block, position)));

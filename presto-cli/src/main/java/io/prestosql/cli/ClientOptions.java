@@ -50,6 +50,9 @@ public class ClientOptions
     @Option(name = "--server", title = "server", description = "Presto server location (default: localhost:8080)")
     public String server = "localhost:8080";
 
+    @Option(name = "--krb5-service-principal-pattern", title = "krb5 remote service principal pattern", description = "Remote kerberos service principal pattern (default: ${SERVICE}@${HOST})")
+    public String krb5ServicePrincipalPattern = "${SERVICE}@${HOST}";
+
     @Option(name = "--krb5-remote-service-name", title = "krb5 remote service name", description = "Remote peer's kerberos service name")
     public String krb5RemoteServiceName;
 
@@ -79,6 +82,9 @@ public class ClientOptions
 
     @Option(name = "--truststore-password", title = "truststore password", description = "Truststore password")
     public String truststorePassword;
+
+    @Option(name = "--insecure", title = "trust all certificates", description = "Skip validation of HTTP server certificates (should only be used for debugging)")
+    public boolean insecure;
 
     @Option(name = "--access-token", title = "access token", description = "Access token")
     public String accessToken;
@@ -122,7 +128,7 @@ public class ClientOptions
     @Option(name = "--execute", title = "execute", description = "Execute specified statements and exit")
     public String execute;
 
-    @Option(name = "--output-format", title = "output-format", description = "Output format for batch mode [ALIGNED, VERTICAL, CSV, TSV, CSV_HEADER, TSV_HEADER, CSV_UNQUOTED, CSV_HEADER_UNQUOTED, NULL] (default: CSV)")
+    @Option(name = "--output-format", title = "output-format", description = "Output format for batch mode [ALIGNED, VERTICAL, JSON, CSV, TSV, CSV_HEADER, TSV_HEADER, CSV_UNQUOTED, CSV_HEADER_UNQUOTED, NULL] (default: CSV)")
     public OutputFormat outputFormat = OutputFormat.CSV;
 
     @Option(name = "--resource-estimate", title = "resource-estimate", description = "Resource estimate (property can be used multiple times; format is key=value)")
@@ -146,6 +152,9 @@ public class ClientOptions
     @Option(name = "--ignore-errors", title = "ignore errors", description = "Continue processing in batch mode when an error occurs (default is to exit immediately)")
     public boolean ignoreErrors;
 
+    @Option(name = "--timezone", title = "timezone", description = "Session time zone (default: system time zone)")
+    public String timeZone = ZoneId.systemDefault().getId();
+
     public enum OutputFormat
     {
         ALIGNED,
@@ -156,6 +165,7 @@ public class ClientOptions
         CSV_HEADER,
         CSV_UNQUOTED,
         CSV_HEADER_UNQUOTED,
+        JSON,
         NULL
     }
 
@@ -171,7 +181,7 @@ public class ClientOptions
                 catalog,
                 schema,
                 null,
-                ZoneId.systemDefault(),
+                ZoneId.of(timeZone),
                 Locale.getDefault(),
                 toResourceEstimates(resourceEstimates),
                 toProperties(sessionProperties),

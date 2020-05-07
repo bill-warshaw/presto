@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
+import static java.util.Collections.unmodifiableList;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -156,6 +157,28 @@ public final class SortedRangeSet
     }
 
     @Override
+    public boolean isDiscreteSet()
+    {
+        for (Range range : lowIndexedRanges.values()) {
+            if (!range.isSingleValue()) {
+                return false;
+            }
+        }
+        return !isNone();
+    }
+
+    @Override
+    public List<Object> getDiscreteSet()
+    {
+        if (!isDiscreteSet()) {
+            throw new IllegalStateException("SortedRangeSet is not a discrete set");
+        }
+        return unmodifiableList(lowIndexedRanges.values().stream()
+                .map(Range::getSingleValue)
+                .collect(Collectors.toList()));
+    }
+
+    @Override
     public boolean containsValue(Object value)
     {
         return includesMarker(Marker.exactly(type, value));
@@ -173,7 +196,7 @@ public final class SortedRangeSet
     public Range getSpan()
     {
         if (lowIndexedRanges.isEmpty()) {
-            throw new IllegalStateException("Can not get span if no ranges exist");
+            throw new IllegalStateException("Cannot get span if no ranges exist");
         }
         return lowIndexedRanges.firstEntry().getValue().span(lowIndexedRanges.lastEntry().getValue());
     }
@@ -229,8 +252,8 @@ public final class SortedRangeSet
 
         Builder builder = new Builder(type);
 
-        Iterator<Range> iterator1 = getOrderedRanges().iterator();
-        Iterator<Range> iterator2 = otherRangeSet.getOrderedRanges().iterator();
+        Iterator<Range> iterator1 = lowIndexedRanges.values().iterator();
+        Iterator<Range> iterator2 = otherRangeSet.lowIndexedRanges.values().iterator();
 
         if (iterator1.hasNext() && iterator2.hasNext()) {
             Range range1 = iterator1.next();
@@ -264,8 +287,8 @@ public final class SortedRangeSet
     {
         SortedRangeSet otherRangeSet = checkCompatibility(other);
         return new Builder(type)
-                .addAll(this.getOrderedRanges())
-                .addAll(otherRangeSet.getOrderedRanges())
+                .addAll(this.lowIndexedRanges.values())
+                .addAll(otherRangeSet.lowIndexedRanges.values())
                 .build();
     }
 
@@ -273,9 +296,9 @@ public final class SortedRangeSet
     public SortedRangeSet union(Collection<ValueSet> valueSets)
     {
         Builder builder = new Builder(type);
-        builder.addAll(this.getOrderedRanges());
+        builder.addAll(this.lowIndexedRanges.values());
         for (ValueSet valueSet : valueSets) {
-            builder.addAll(checkCompatibility(valueSet).getOrderedRanges());
+            builder.addAll(checkCompatibility(valueSet).lowIndexedRanges.values());
         }
         return builder.build();
     }
@@ -350,6 +373,12 @@ public final class SortedRangeSet
         }
         final SortedRangeSet other = (SortedRangeSet) obj;
         return Objects.equals(this.lowIndexedRanges, other.lowIndexedRanges);
+    }
+
+    @Override
+    public String toString()
+    {
+        return lowIndexedRanges.values().toString();
     }
 
     @Override

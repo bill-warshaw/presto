@@ -14,13 +14,25 @@
 package io.prestosql.plugin.hive.authentication;
 
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
+import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+
 public class TestMetastoreKerberosConfig
 {
+    @Test
+    public void testDefaults()
+    {
+        assertRecordedDefaults(recordDefaults(MetastoreKerberosConfig.class)
+                .setHiveMetastoreServicePrincipal(null)
+                .setHiveMetastoreClientPrincipal(null)
+                .setHiveMetastoreClientKeytab(null));
+    }
+
     @Test
     public void testExplicitPropertyMappings()
     {
@@ -35,6 +47,6 @@ public class TestMetastoreKerberosConfig
                 .setHiveMetastoreClientPrincipal("metastore@EXAMPLE.COM")
                 .setHiveMetastoreClientKeytab("/tmp/metastore.keytab");
 
-        ConfigAssertions.assertFullMapping(properties, expected);
+        assertFullMapping(properties, expected);
     }
 }

@@ -32,6 +32,8 @@ import org.testng.annotations.Test;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
@@ -44,10 +46,9 @@ import static io.prestosql.testing.TestingConnectorSession.SESSION;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 
-@Test
 public class TestJdbcRecordSetProvider
 {
-    private static final JdbcIdentity IDENTITY = new JdbcIdentity("user", ImmutableMap.of());
+    private static final JdbcIdentity IDENTITY = JdbcIdentity.from(SESSION);
 
     private TestingDatabase database;
     private JdbcClient jdbcClient;
@@ -179,8 +180,16 @@ public class TestJdbcRecordSetProvider
 
     private RecordCursor getCursor(JdbcTableHandle jdbcTableHandle, List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> domain)
     {
-        JdbcTableLayoutHandle layoutHandle = new JdbcTableLayoutHandle(jdbcTableHandle, domain);
-        ConnectorSplitSource splits = jdbcClient.getSplits(IDENTITY, layoutHandle);
+        jdbcTableHandle = new JdbcTableHandle(
+                jdbcTableHandle.getSchemaTableName(),
+                jdbcTableHandle.getCatalogName(),
+                jdbcTableHandle.getSchemaName(),
+                jdbcTableHandle.getTableName(),
+                Optional.empty(),
+                domain,
+                OptionalLong.empty());
+
+        ConnectorSplitSource splits = jdbcClient.getSplits(SESSION, jdbcTableHandle);
         JdbcSplit split = (JdbcSplit) getOnlyElement(getFutureValue(splits.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
 
         ConnectorTransactionHandle transaction = new JdbcTransactionHandle();

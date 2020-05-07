@@ -14,16 +14,15 @@
 package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorSplit;
 import io.prestosql.spi.connector.ConnectorSplitSource;
-import io.prestosql.spi.predicate.TupleDomain;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -51,10 +50,10 @@ public class TestHiveSplitSource
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
                 10,
                 10,
-                new DataSize(1, MEGABYTE),
+                DataSize.of(1, MEGABYTE),
+                Integer.MAX_VALUE,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
@@ -85,10 +84,10 @@ public class TestHiveSplitSource
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
                 10,
                 10,
-                new DataSize(1, MEGABYTE),
+                DataSize.of(1, MEGABYTE),
+                Integer.MAX_VALUE,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
@@ -139,22 +138,22 @@ public class TestHiveSplitSource
     public void testReaderWaitsForSplits()
             throws Exception
     {
-        final HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
+        HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
                 10,
                 10,
-                new DataSize(1, MEGABYTE),
+                DataSize.of(1, MEGABYTE),
+                Integer.MAX_VALUE,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
 
-        final SettableFuture<ConnectorSplit> splits = SettableFuture.create();
+        SettableFuture<ConnectorSplit> splits = SettableFuture.create();
 
         // create a thread that will get a split
-        final CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch started = new CountDownLatch(1);
         Thread getterThread = new Thread(new Runnable()
         {
             @Override
@@ -197,15 +196,15 @@ public class TestHiveSplitSource
     @Test
     public void testOutstandingSplitSize()
     {
-        DataSize maxOutstandingSplitsSize = new DataSize(1, MEGABYTE);
+        DataSize maxOutstandingSplitsSize = DataSize.of(1, MEGABYTE);
         HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
                 10,
                 10000,
                 maxOutstandingSplitsSize,
+                Integer.MAX_VALUE,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
@@ -235,14 +234,14 @@ public class TestHiveSplitSource
     @Test
     public void testEmptyBucket()
     {
-        final HiveSplitSource hiveSplitSource = HiveSplitSource.bucketed(
+        HiveSplitSource hiveSplitSource = HiveSplitSource.bucketed(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
                 10,
                 10,
-                new DataSize(1, MEGABYTE),
+                DataSize.of(1, MEGABYTE),
+                Integer.MAX_VALUE,
                 new TestingHiveSplitLoader(),
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
@@ -299,15 +298,17 @@ public class TestHiveSplitSource
                     0,
                     100,
                     100,
+                    Instant.now().toEpochMilli(),
                     properties("id", String.valueOf(id)),
                     ImmutableList.of(),
                     ImmutableList.of(new InternalHiveBlock(0, 100, ImmutableList.of())),
                     bucketNumber,
                     true,
                     false,
-                    ImmutableMap.of(),
+                    TableToPartitionMapping.empty(),
                     Optional.empty(),
-                    false);
+                    false,
+                    Optional.empty());
         }
 
         private static Properties properties(String key, String value)

@@ -18,8 +18,7 @@ import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
-import io.prestosql.metadata.Signature;
-import io.prestosql.spi.type.StandardTypes;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.ExpressionUtils;
 import io.prestosql.sql.planner.PlanNodeIdAllocator;
@@ -40,7 +39,6 @@ import io.prestosql.sql.planner.plan.UnionNode;
 import io.prestosql.sql.tree.Cast;
 import io.prestosql.sql.tree.ComparisonExpression;
 import io.prestosql.sql.tree.Expression;
-import io.prestosql.sql.tree.FunctionCall;
 import io.prestosql.sql.tree.GenericLiteral;
 import io.prestosql.sql.tree.NullLiteral;
 import io.prestosql.sql.tree.QualifiedName;
@@ -52,10 +50,10 @@ import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.concat;
-import static io.prestosql.metadata.FunctionKind.AGGREGATE;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.prestosql.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.prestosql.sql.planner.plan.AggregationNode.Step;
 import static io.prestosql.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.prestosql.sql.tree.BooleanLiteral.TRUE_LITERAL;
@@ -66,45 +64,69 @@ import static java.util.stream.Collectors.toList;
 
 /**
  * Converts INTERSECT and EXCEPT queries into UNION ALL..GROUP BY...WHERE
- * Eg:  SELECT a FROM foo INTERSECT SELECT x FROM bar
- * <p/>
+ * E.g.:
+ * <pre>
+ *     SELECT a FROM foo
+ *     INTERSECT
+ *     SELECT x FROM bar
+ * </pre>
  * =>
- * <p/>
- * SELECT a
- * FROM
- * (SELECT a,
- * COUNT(foo_marker) AS foo_cnt,
- * COUNT(bar_marker) AS bar_cnt
- * FROM
- * (
- * SELECT a, true as foo_marker, null as bar_marker FROM foo
- * UNION ALL
- * SELECT x, null as foo_marker, true as bar_marker FROM bar
- * ) T1
- * GROUP BY a) T2
- * WHERE foo_cnt >= 1 AND bar_cnt >= 1;
- * <p>
- * Eg:  SELECT a FROM foo EXCEPT SELECT x FROM bar
- * <p/>
+ * <pre>
+ *     SELECT a
+ *     FROM
+ *     (
+ *         SELECT a,
+ *         COUNT(foo_marker) AS foo_count,
+ *         COUNT(bar_marker) AS bar_count
+ *         FROM
+ *         (
+ *             SELECT a, true as foo_marker, null as bar_marker
+ *             FROM foo
+ *             UNION ALL
+ *             SELECT x, null as foo_marker, true as bar_marker
+ *             FROM bar
+ *         ) T1
+ *     GROUP BY a
+ *     ) T2
+ *     WHERE foo_count >= 1 AND bar_count >= 1;
+ * </pre>
+ * E.g.:
+ * <pre>
+ *     SELECT a FROM foo
+ *     EXCEPT
+ *     SELECT x FROM bar
+ * </pre>
  * =>
- * <p/>
- * SELECT a
- * FROM
- * (SELECT a,
- * COUNT(foo_marker) AS foo_cnt,
- * COUNT(bar_marker) AS bar_cnt
- * FROM
- * (
- * SELECT a, true as foo_marker, null as bar_marker FROM foo
- * UNION ALL
- * SELECT x, null as foo_marker, true as bar_marker FROM bar
- * ) T1
- * GROUP BY a) T2
- * WHERE foo_cnt >= 1 AND bar_cnt = 0;
+ * <pre>
+ *     SELECT a
+ *     FROM
+ *     (
+ *         SELECT a,
+ *         COUNT(foo_marker) AS foo_count,
+ *         COUNT(bar_marker) AS bar_count
+ *         FROM
+ *         (
+ *             SELECT a, true as foo_marker, null as bar_marker
+ *             FROM foo
+ *             UNION ALL
+ *             SELECT x, null as foo_marker, true as bar_marker
+ *             FROM bar
+ *         ) T1
+ *     GROUP BY a
+ *     ) T2
+ *     WHERE foo_count >= 1 AND bar_count = 0;
+ * </pre>
  */
 public class ImplementIntersectAndExceptAsUnion
         implements PlanOptimizer
 {
+    private final Metadata metadata;
+
+    public ImplementIntersectAndExceptAsUnion(Metadata metadata)
+    {
+        this.metadata = metadata;
+    }
+
     @Override
     public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
@@ -114,19 +136,20 @@ public class ImplementIntersectAndExceptAsUnion
         requireNonNull(symbolAllocator, "symbolAllocator is null");
         requireNonNull(idAllocator, "idAllocator is null");
 
-        return SimplePlanRewriter.rewriteWith(new Rewriter(idAllocator, symbolAllocator), plan);
+        return SimplePlanRewriter.rewriteWith(new Rewriter(metadata, idAllocator, symbolAllocator), plan);
     }
 
     private static class Rewriter
             extends SimplePlanRewriter<Void>
     {
         private static final String MARKER = "marker";
-        private static final Signature COUNT_AGGREGATION = new Signature("count", AGGREGATE, parseTypeSignature(StandardTypes.BIGINT), parseTypeSignature(StandardTypes.BOOLEAN));
+        private final Metadata metadata;
         private final PlanNodeIdAllocator idAllocator;
         private final SymbolAllocator symbolAllocator;
 
-        private Rewriter(PlanNodeIdAllocator idAllocator, SymbolAllocator symbolAllocator)
+        private Rewriter(Metadata metadata, PlanNodeIdAllocator idAllocator, SymbolAllocator symbolAllocator)
         {
+            this.metadata = requireNonNull(metadata, "metadata is null");
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.symbolAllocator = requireNonNull(symbolAllocator, "symbolAllocator is null");
         }
@@ -210,7 +233,7 @@ public class ImplementIntersectAndExceptAsUnion
 
             // add extra marker fields to the projection
             for (int i = 0; i < markers.size(); ++i) {
-                Expression expression = (i == markerIndex) ? TRUE_LITERAL : new Cast(new NullLiteral(), StandardTypes.BOOLEAN);
+                Expression expression = (i == markerIndex) ? TRUE_LITERAL : new Cast(new NullLiteral(), toSqlType(BOOLEAN));
                 assignments.put(symbolAllocator.newSymbol(markers.get(i).getName(), BOOLEAN), expression);
             }
 
@@ -236,8 +259,11 @@ public class ImplementIntersectAndExceptAsUnion
             for (int i = 0; i < markers.size(); i++) {
                 Symbol output = aggregationOutputs.get(i);
                 aggregations.put(output, new Aggregation(
-                        new FunctionCall(QualifiedName.of("count"), ImmutableList.of(markers.get(i).toSymbolReference())),
-                        COUNT_AGGREGATION,
+                        metadata.resolveFunction(QualifiedName.of("count"), fromTypes(BOOLEAN)),
+                        ImmutableList.of(markers.get(i).toSymbolReference()),
+                        false,
+                        Optional.empty(),
+                        Optional.empty(),
                         Optional.empty()));
             }
 

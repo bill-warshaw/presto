@@ -31,30 +31,26 @@ import static java.util.Objects.requireNonNull;
 public final class ScalarFunctionImplementation
 {
     private final List<ScalarImplementationChoice> choices;
-    private final boolean deterministic;
 
     public ScalarFunctionImplementation(
             boolean nullable,
             List<ArgumentProperty> argumentProperties,
-            MethodHandle methodHandle,
-            boolean deterministic)
+            MethodHandle methodHandle)
     {
         this(
                 nullable,
                 argumentProperties,
                 methodHandle,
-                Optional.empty(),
-                deterministic);
+                Optional.empty());
     }
 
     public ScalarFunctionImplementation(
             boolean nullable,
             List<ArgumentProperty> argumentProperties,
             MethodHandle methodHandle,
-            Optional<MethodHandle> instanceFactory,
-            boolean deterministic)
+            Optional<MethodHandle> instanceFactory)
     {
-        this(ImmutableList.of(new ScalarImplementationChoice(nullable, argumentProperties, methodHandle, instanceFactory)), deterministic);
+        this(ImmutableList.of(new ScalarImplementationChoice(nullable, argumentProperties, methodHandle, instanceFactory)));
     }
 
     /**
@@ -66,11 +62,10 @@ public final class ScalarFunctionImplementation
      *
      * @param choices the list of choices, ordered from generic to specific
      */
-    public ScalarFunctionImplementation(List<ScalarImplementationChoice> choices, boolean deterministic)
+    public ScalarFunctionImplementation(List<ScalarImplementationChoice> choices)
     {
         checkArgument(!choices.isEmpty(), "choices is an empty list");
         this.choices = ImmutableList.copyOf(choices);
-        this.deterministic = deterministic;
     }
 
     public boolean isNullable()
@@ -96,11 +91,6 @@ public final class ScalarFunctionImplementation
     public List<ScalarImplementationChoice> getAllChoices()
     {
         return choices;
-    }
-
-    public boolean isDeterministic()
-    {
-        return deterministic;
     }
 
     public static class ScalarImplementationChoice
@@ -179,19 +169,19 @@ public final class ScalarFunctionImplementation
         // TODO: Alternatively, we can store io.prestosql.spi.type.Type
         private final ArgumentType argumentType;
         private final Optional<NullConvention> nullConvention;
-        private final Optional<Class> lambdaInterface;
+        private final Optional<Class<?>> lambdaInterface;
 
         public static ArgumentProperty valueTypeArgumentProperty(NullConvention nullConvention)
         {
             return new ArgumentProperty(VALUE_TYPE, Optional.of(nullConvention), Optional.empty());
         }
 
-        public static ArgumentProperty functionTypeArgumentProperty(Class lambdaInterface)
+        public static ArgumentProperty functionTypeArgumentProperty(Class<?> lambdaInterface)
         {
             return new ArgumentProperty(FUNCTION_TYPE, Optional.empty(), Optional.of(lambdaInterface));
         }
 
-        public ArgumentProperty(ArgumentType argumentType, Optional<NullConvention> nullConvention, Optional<Class> lambdaInterface)
+        public ArgumentProperty(ArgumentType argumentType, Optional<NullConvention> nullConvention, Optional<Class<?>> lambdaInterface)
         {
             switch (argumentType) {
                 case VALUE_TYPE:
@@ -223,7 +213,7 @@ public final class ScalarFunctionImplementation
             return nullConvention.get();
         }
 
-        public Class getLambdaInterface()
+        public Class<?> getLambdaInterface()
         {
             checkState(getArgumentType() == FUNCTION_TYPE, "lambdaInterface only applies to function type argument");
             return lambdaInterface.get();

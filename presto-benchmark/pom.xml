@@ -3,9 +3,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <artifactId>presto-root</artifactId>
         <groupId>io.prestosql</groupId>
-        <version>308-SNAPSHOT</version>
+        <artifactId>presto-root</artifactId>
+        <version>334-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-benchmark</artifactId>

@@ -30,6 +30,7 @@ import io.prestosql.sql.planner.TypeProvider;
 import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
@@ -40,7 +41,6 @@ import io.prestosql.sql.planner.plan.GroupIdNode;
 import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OutputNode;
@@ -53,6 +53,7 @@ import io.prestosql.sql.planner.plan.SemiJoinNode;
 import io.prestosql.sql.planner.plan.SortNode;
 import io.prestosql.sql.planner.plan.SpatialJoinNode;
 import io.prestosql.sql.planner.plan.StatisticsWriterNode;
+import io.prestosql.sql.planner.plan.TableDeleteNode;
 import io.prestosql.sql.planner.plan.TableFinishNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.TableWriterNode;
@@ -400,6 +401,13 @@ public final class StreamPropertyDerivations
         }
 
         @Override
+        public StreamProperties visitTableDelete(TableDeleteNode node, List<StreamProperties> inputProperties)
+        {
+            // delete only outputs a single row count
+            return StreamProperties.singleStream();
+        }
+
+        @Override
         public StreamProperties visitDelete(DeleteNode node, List<StreamProperties> inputProperties)
         {
             StreamProperties properties = Iterables.getOnlyElement(inputProperties);
@@ -422,12 +430,23 @@ public final class StreamPropertyDerivations
 
             // We can describe properties in terms of inputs that are projected unmodified (i.e., not the unnested symbols)
             Set<Symbol> passThroughInputs = ImmutableSet.copyOf(node.getReplicateSymbols());
-            return properties.translate(column -> {
+            StreamProperties translatedProperties = properties.translate(column -> {
                 if (passThroughInputs.contains(column)) {
                     return Optional.of(column);
                 }
                 return Optional.empty();
             });
+
+            switch (node.getJoinType()) {
+                case INNER:
+                case LEFT:
+                    return translatedProperties;
+                case RIGHT:
+                case FULL:
+                    return translatedProperties.unordered(true);
+                default:
+                    throw new UnsupportedOperationException("Unknown UNNEST join type: " + node.getJoinType());
+            }
         }
 
         @Override
@@ -514,7 +533,7 @@ public final class StreamPropertyDerivations
         public StreamProperties visitTopN(TopNNode node, List<StreamProperties> inputProperties)
         {
             // Partial TopN doesn't guarantee that stream is ordered
-            if (node.getStep().equals(TopNNode.Step.PARTIAL)) {
+            if (node.getStep() == TopNNode.Step.PARTIAL) {
                 return Iterables.getOnlyElement(inputProperties);
             }
             return StreamProperties.ordered();
@@ -557,7 +576,7 @@ public final class StreamPropertyDerivations
         }
 
         @Override
-        public StreamProperties visitLateralJoin(LateralJoinNode node, List<StreamProperties> inputProperties)
+        public StreamProperties visitCorrelatedJoin(CorrelatedJoinNode node, List<StreamProperties> inputProperties)
         {
             throw new IllegalStateException("Unexpected node: " + node.getClass());
         }
@@ -748,7 +767,7 @@ public final class StreamPropertyDerivations
                 return false;
             }
             StreamProperties other = (StreamProperties) obj;
-            return Objects.equals(this.distribution, other.distribution) &&
+            return this.distribution == other.distribution &&
                     Objects.equals(this.partitioningColumns, other.partitioningColumns);
         }
 

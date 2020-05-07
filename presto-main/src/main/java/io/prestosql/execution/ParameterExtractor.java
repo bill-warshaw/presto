@@ -20,7 +20,7 @@ import io.prestosql.sql.tree.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
-public class ParameterExtractor
+public final class ParameterExtractor
 {
     private ParameterExtractor() {}
 
@@ -39,7 +39,7 @@ public class ParameterExtractor
     }
 
     private static class ParameterExtractingVisitor
-            extends DefaultTraversalVisitor<Void, Void>
+            extends DefaultTraversalVisitor<Void>
     {
         private final List<Parameter> parameters = new ArrayList<>();
 

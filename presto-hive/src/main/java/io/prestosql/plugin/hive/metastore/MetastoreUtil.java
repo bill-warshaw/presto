@@ -14,8 +14,10 @@
 package io.prestosql.plugin.hive.metastore;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableMultimap;
 import io.prestosql.plugin.hive.PartitionOfflineException;
 import io.prestosql.plugin.hive.TableOfflineException;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.TableNotFoundException;
@@ -30,8 +32,11 @@ import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static io.prestosql.plugin.hive.HiveMetadata.AVRO_SCHEMA_URL_KEY;
 import static io.prestosql.plugin.hive.HiveSplitManager.PRESTO_OFFLINE;
+import static io.prestosql.plugin.hive.HiveStorageFormat.AVRO;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.prestosql.spi.security.PrincipalType.USER;
 import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.metastore.ColumnType.typeToThriftType;
 import static org.apache.hadoop.hive.metastore.ProtectMode.getProtectModeFromString;
@@ -48,11 +53,9 @@ import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_DDL;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 
-public class MetastoreUtil
+public final class MetastoreUtil
 {
-    private MetastoreUtil()
-    {
-    }
+    private MetastoreUtil() {}
 
     public static Properties getHiveSchema(Table table)
     {
@@ -177,13 +180,29 @@ public class MetastoreUtil
         return getProtectMode(table.getParameters());
     }
 
-    public static String makePartName(List<Column> partitionColumns, List<String> values)
+    public static boolean isAvroTableWithSchemaSet(Table table)
     {
-        checkArgument(partitionColumns.size() == values.size(), "Partition value count does not match the partition column count");
-        checkArgument(values.stream().allMatch(Objects::nonNull), "partitionValue must not have null elements");
+        return AVRO.getSerDe().equals(table.getStorage().getStorageFormat().getSerDeNullable()) &&
+                (table.getParameters().get(AVRO_SCHEMA_URL_KEY) != null ||
+                        (table.getStorage().getSerdeParameters().get(AVRO_SCHEMA_URL_KEY) != null));
+    }
 
-        List<String> partitionColumnNames = partitionColumns.stream().map(Column::getName).collect(toList());
-        return FileUtils.makePartName(partitionColumnNames, values);
+    public static String makePartitionName(Table table, Partition partition)
+    {
+        return makePartitionName(table.getPartitionColumns(), partition.getValues());
+    }
+
+    public static String makePartitionName(List<Column> partitionColumns, List<String> values)
+    {
+        return toPartitionName(partitionColumns.stream().map(Column::getName).collect(toList()), values);
+    }
+
+    public static String toPartitionName(List<String> names, List<String> values)
+    {
+        checkArgument(names.size() == values.size(), "partition value count must match partition column count");
+        checkArgument(values.stream().allMatch(Objects::nonNull), "partition value must not be null");
+
+        return FileUtils.makePartName(names, values);
     }
 
     public static String getPartitionLocation(Table table, Optional<Partition> partition)
@@ -246,9 +265,9 @@ public class MetastoreUtil
         }
     }
 
-    public static void verifyCanDropColumn(HiveMetastore metastore, String databaseName, String tableName, String columnName)
+    public static void verifyCanDropColumn(HiveMetastore metastore, HiveIdentity identity, String databaseName, String tableName, String columnName)
     {
-        Table table = metastore.getTable(databaseName, tableName)
+        Table table = metastore.getTable(identity, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
 
         if (table.getPartitionColumns().stream().anyMatch(column -> column.getName().equals(columnName))) {
@@ -257,5 +276,18 @@ public class MetastoreUtil
         if (table.getDataColumns().size() <= 1) {
             throw new PrestoException(NOT_SUPPORTED, "Cannot drop the only non-partition column in a table");
         }
+    }
+
+    public static PrincipalPrivileges buildInitialPrivilegeSet(String tableOwner)
+    {
+        HivePrincipal owner = new HivePrincipal(USER, tableOwner);
+        return new PrincipalPrivileges(
+                ImmutableMultimap.<String, HivePrivilegeInfo>builder()
+                        .put(tableOwner, new HivePrivilegeInfo(HivePrivilegeInfo.HivePrivilege.SELECT, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(HivePrivilegeInfo.HivePrivilege.INSERT, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(HivePrivilegeInfo.HivePrivilege.UPDATE, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(HivePrivilegeInfo.HivePrivilege.DELETE, true, owner, owner))
+                        .build(),
+                ImmutableMultimap.of());
     }
 }

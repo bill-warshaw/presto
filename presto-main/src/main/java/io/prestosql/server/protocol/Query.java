@@ -18,8 +18,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.util.concurrent.AbstractFuture;
-import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.log.Logger;
@@ -37,19 +35,19 @@ import io.prestosql.client.RowFieldName;
 import io.prestosql.client.StageStats;
 import io.prestosql.client.StatementStats;
 import io.prestosql.client.Warning;
+import io.prestosql.execution.ExecutionFailureInfo;
 import io.prestosql.execution.QueryExecution;
 import io.prestosql.execution.QueryInfo;
 import io.prestosql.execution.QueryManager;
 import io.prestosql.execution.QueryState;
 import io.prestosql.execution.QueryStats;
+import io.prestosql.execution.StageId;
 import io.prestosql.execution.StageInfo;
 import io.prestosql.execution.TaskInfo;
 import io.prestosql.execution.buffer.PagesSerde;
 import io.prestosql.execution.buffer.PagesSerdeFactory;
 import io.prestosql.execution.buffer.SerializedPage;
-import io.prestosql.metadata.SessionPropertyManager;
 import io.prestosql.operator.ExchangeClient;
-import io.prestosql.server.SessionContext;
 import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PrestoWarning;
@@ -81,24 +79,22 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
 import static io.airlift.concurrent.MoreFutures.addTimeout;
 import static io.prestosql.SystemSessionProperties.isExchangeCompressionEnabled;
 import static io.prestosql.execution.QueryState.FAILED;
+import static io.prestosql.server.protocol.Slug.Context.EXECUTING_QUERY;
 import static io.prestosql.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.prestosql.util.Failures.toFailure;
 import static io.prestosql.util.MoreLists.mappedCopy;
 import static java.lang.String.format;
-import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
-import static java.util.UUID.randomUUID;
 
 @ThreadSafe
 class Query
@@ -107,7 +103,8 @@ class Query
 
     private final QueryManager queryManager;
     private final QueryId queryId;
-    private final String slug = "x" + randomUUID().toString().toLowerCase(ENGLISH).replace("-", "");
+    private final Session session;
+    private final Slug slug;
 
     @GuardedBy("this")
     private final ExchangeClient exchangeClient;
@@ -115,23 +112,16 @@ class Query
     private final Executor resultsProcessorExecutor;
     private final ScheduledExecutorService timeoutExecutor;
 
-    @GuardedBy("this")
-    private PagesSerde serde;
-
-    private final AtomicLong resultId = new AtomicLong();
-
-    private final QuerySubmissionFuture submissionFuture;
-    private final SessionPropertyManager sessionPropertyManager;
-    private final BlockEncodingSerde blockEncodingSerde;
+    private final PagesSerde serde;
 
     @GuardedBy("this")
-    private Session session;
+    private OptionalLong nextToken = OptionalLong.of(0);
 
     @GuardedBy("this")
     private QueryResults lastResult;
 
     @GuardedBy("this")
-    private String lastResultPath;
+    private long lastToken = -1;
 
     @GuardedBy("this")
     private List<Column> columns;
@@ -173,77 +163,72 @@ class Query
     private Long updateCount;
 
     public static Query create(
-            SessionContext sessionContext,
-            String query,
+            Session session,
+            Slug slug,
             QueryManager queryManager,
-            SessionPropertyManager sessionPropertyManager,
             ExchangeClient exchangeClient,
             Executor dataProcessorExecutor,
             ScheduledExecutorService timeoutExecutor,
             BlockEncodingSerde blockEncodingSerde)
     {
-        Query result = new Query(sessionContext, query, queryManager, sessionPropertyManager, exchangeClient, dataProcessorExecutor, timeoutExecutor, blockEncodingSerde);
+        Query result = new Query(session, slug, queryManager, exchangeClient, dataProcessorExecutor, timeoutExecutor, blockEncodingSerde);
 
-        // register listeners after submission finishes
-        addSuccessCallback(result.submissionFuture, () -> {
-            result.queryManager.addOutputInfoListener(result.getQueryId(), result::setQueryOutputInfo);
+        result.queryManager.addOutputInfoListener(result.getQueryId(), result::setQueryOutputInfo);
 
-            result.queryManager.addStateChangeListener(result.getQueryId(), state -> {
-                if (state.isDone()) {
-                    QueryInfo queryInfo = queryManager.getFullQueryInfo(result.getQueryId());
-                    result.closeExchangeClientIfNecessary(queryInfo);
-                }
-            });
+        result.queryManager.addStateChangeListener(result.getQueryId(), state -> {
+            if (state.isDone()) {
+                QueryInfo queryInfo = queryManager.getFullQueryInfo(result.getQueryId());
+                result.closeExchangeClientIfNecessary(queryInfo);
+            }
         });
 
         return result;
     }
 
     private Query(
-            SessionContext sessionContext,
-            String query,
+            Session session,
+            Slug slug,
             QueryManager queryManager,
-            SessionPropertyManager sessionPropertyManager,
             ExchangeClient exchangeClient,
             Executor resultsProcessorExecutor,
             ScheduledExecutorService timeoutExecutor,
             BlockEncodingSerde blockEncodingSerde)
     {
-        requireNonNull(sessionContext, "sessionContext is null");
-        requireNonNull(query, "query is null");
+        requireNonNull(session, "session is null");
+        requireNonNull(slug, "slug is null");
         requireNonNull(queryManager, "queryManager is null");
-        requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
         requireNonNull(exchangeClient, "exchangeClient is null");
         requireNonNull(resultsProcessorExecutor, "resultsProcessorExecutor is null");
         requireNonNull(timeoutExecutor, "timeoutExecutor is null");
         requireNonNull(blockEncodingSerde, "serde is null");
 
         this.queryManager = queryManager;
-        this.sessionPropertyManager = sessionPropertyManager;
 
-        queryId = queryManager.createQueryId();
-        submissionFuture = new QuerySubmissionFuture(queryId, query, sessionContext, queryManager);
+        this.queryId = session.getQueryId();
+        this.session = session;
+        this.slug = slug;
         this.exchangeClient = exchangeClient;
         this.resultsProcessorExecutor = resultsProcessorExecutor;
         this.timeoutExecutor = timeoutExecutor;
-        this.blockEncodingSerde = blockEncodingSerde;
-    }
 
-    public boolean isSubmissionFinished()
-    {
-        return submissionFuture.isDone();
+        serde = new PagesSerdeFactory(blockEncodingSerde, isExchangeCompressionEnabled(session)).createPagesSerde();
     }
 
     public void cancel()
     {
-        // if submission is not finished, send cancel after it is finished
-        if (submissionFuture.isDone()) {
-            submissionFuture.addListener(() -> queryManager.cancelQuery(queryId), resultsProcessorExecutor);
-        }
-        else {
-            queryManager.cancelQuery(queryId);
-        }
+        queryManager.cancelQuery(queryId);
         dispose();
+    }
+
+    public void partialCancel(int id)
+    {
+        StageId stageId = new StageId(queryId, id);
+        queryManager.cancelStage(stageId);
+    }
+
+    public void fail(Throwable throwable)
+    {
+        queryManager.failQuery(queryId, throwable);
     }
 
     public synchronized void dispose()
@@ -256,9 +241,14 @@ class Query
         return queryId;
     }
 
-    public boolean isSlugValid(String slug)
+    public boolean isSlugValid(String slug, long token)
     {
-        return this.slug.equals(slug);
+        return this.slug.isValid(EXECUTING_QUERY, slug, token);
+    }
+
+    public QueryInfo getQueryInfo()
+    {
+        return queryManager.getFullQueryInfo(queryId);
     }
 
     public synchronized Optional<String> getSetCatalog()
@@ -311,14 +301,12 @@ class Query
         return clearTransactionId;
     }
 
-    public synchronized ListenableFuture<QueryResults> waitForResults(OptionalLong token, UriInfo uriInfo, String scheme, Duration wait, DataSize targetResultSize)
+    public synchronized ListenableFuture<QueryResults> waitForResults(long token, UriInfo uriInfo, String scheme, Duration wait, DataSize targetResultSize)
     {
         // before waiting, check if this request has already been processed and cached
-        if (token.isPresent()) {
-            Optional<QueryResults> cachedResult = getCachedResult(token.getAsLong(), uriInfo);
-            if (cachedResult.isPresent()) {
-                return immediateFuture(cachedResult.get());
-            }
+        Optional<QueryResults> cachedResult = getCachedResult(token);
+        if (cachedResult.isPresent()) {
+            return immediateFuture(cachedResult.get());
         }
 
         // wait for a results data or query to finish, up to the wait timeout
@@ -334,14 +322,6 @@ class Query
 
     private synchronized ListenableFuture<?> getFutureStateChange()
     {
-        // ensure the query has been submitted
-        submissionFuture.submitQuery();
-
-        // if query query submission has not finished, wait for it to finish
-        if (!submissionFuture.isDone()) {
-            return submissionFuture;
-        }
-
         // if the exchange client is open, wait for data
         if (!exchangeClient.isClosed()) {
             return exchangeClient.isBlocked();
@@ -357,24 +337,32 @@ class Query
         }
     }
 
-    private synchronized Optional<QueryResults> getCachedResult(long token, UriInfo uriInfo)
+    private synchronized Optional<QueryResults> getCachedResult(long token)
     {
+        // is this the first request?
+        if (lastResult == null) {
+            return Optional.empty();
+        }
+
         // is the a repeated request for the last results?
-        String requestedPath = uriInfo.getAbsolutePath().getPath();
-        if (requestedPath.equals(lastResultPath)) {
-            if (submissionFuture.isDone()) {
-                // tell query manager we are still interested in the query
-                queryManager.recordHeartbeat(queryId);
-            }
+        if (token == lastToken) {
+            // tell query manager we are still interested in the query
+            queryManager.recordHeartbeat(queryId);
             return Optional.of(lastResult);
         }
 
-        if (token < resultId.get()) {
+        // if this is a result before the lastResult, the data is gone
+        if (token < lastToken) {
             throw new WebApplicationException(Response.Status.GONE);
         }
 
+        // if this is a request for a result after the end of the stream, return not found
+        if (!nextToken.isPresent()) {
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+
         // if this is not a request for the next results, return not found
-        if (lastResult.getNextUri() == null || !requestedPath.equals(lastResult.getNextUri().getPath())) {
+        if (token != nextToken.getAsLong()) {
             // unknown token
             throw new WebApplicationException(Response.Status.NOT_FOUND);
         }
@@ -382,49 +370,21 @@ class Query
         return Optional.empty();
     }
 
-    public synchronized QueryResults getNextResult(OptionalLong token, UriInfo uriInfo, String scheme, DataSize targetResultSize)
+    private synchronized QueryResults getNextResult(long token, UriInfo uriInfo, String scheme, DataSize targetResultSize)
     {
         // check if the result for the token have already been created
-        if (token.isPresent()) {
-            Optional<QueryResults> cachedResult = getCachedResult(token.getAsLong(), uriInfo);
-            if (cachedResult.isPresent()) {
-                return cachedResult.get();
-            }
+        Optional<QueryResults> cachedResult = getCachedResult(token);
+        if (cachedResult.isPresent()) {
+            return cachedResult.get();
         }
 
+        verify(nextToken.isPresent(), "Cannot generate next result when next token is not present");
+        verify(token == nextToken.getAsLong(), "Expected token to equal next token");
         URI queryHtmlUri = uriInfo.getRequestUriBuilder()
                 .scheme(scheme)
                 .replacePath("ui/query.html")
                 .replaceQuery(queryId.toString())
                 .build();
-
-        // if query query submission has not finished, return simple empty result
-        if (!submissionFuture.isDone()) {
-            QueryResults queryResults = new QueryResults(
-                    queryId.toString(),
-                    queryHtmlUri,
-                    null,
-                    createNextResultsUri(scheme, uriInfo),
-                    null,
-                    null,
-                    StatementStats.builder()
-                            .setState(QueryState.QUEUED.toString())
-                            .setQueued(true)
-                            .setScheduled(false)
-                            .build(),
-                    null,
-                    ImmutableList.of(),
-                    null,
-                    null);
-
-            cacheLastResults(queryResults);
-            return queryResults;
-        }
-
-        if (session == null) {
-            session = queryManager.getFullQueryInfo(queryId).getSession().toSession(sessionPropertyManager);
-            serde = new PagesSerdeFactory(blockEncodingSerde, isExchangeCompressionEnabled(session)).createPagesSerde();
-        }
 
         // Remove as many pages as possible from the exchange until just greater than DESIRED_RESULT_BYTES
         // NOTE: it is critical that query results are created for the pages removed from the exchange
@@ -483,14 +443,25 @@ class Query
             data = ImmutableSet.of(ImmutableList.of(true));
         }
 
+        // advance next token
         // only return a next if
         // (1) the query is not done AND the query state is not FAILED
         //   OR
         // (2)there is more data to send (due to buffering)
+        if ((!queryInfo.isFinalQueryInfo() && queryInfo.getState() != FAILED) || !exchangeClient.isClosed()) {
+            nextToken = OptionalLong.of(token + 1);
+        }
+        else {
+            nextToken = OptionalLong.empty();
+        }
+
         URI nextResultsUri = null;
-        if (!queryInfo.isFinalQueryInfo() && !queryInfo.getState().equals(QueryState.FAILED)
-                || !exchangeClient.isClosed()) {
-            nextResultsUri = createNextResultsUri(scheme, uriInfo);
+        URI partialCancelUri = null;
+        if (nextToken.isPresent()) {
+            nextResultsUri = createNextResultsUri(scheme, uriInfo, nextToken.getAsLong());
+            partialCancelUri = findCancelableLeafStage(queryInfo)
+                    .map(stage -> this.createPartialCancelUri(stage, scheme, uriInfo, nextToken.getAsLong()))
+                    .orElse(null);
         }
 
         // update catalog, schema, and path
@@ -517,7 +488,7 @@ class Query
         QueryResults queryResults = new QueryResults(
                 queryId.toString(),
                 queryHtmlUri,
-                findCancelableLeafStage(queryInfo),
+                partialCancelUri,
                 nextResultsUri,
                 columns,
                 data,
@@ -527,20 +498,11 @@ class Query
                 queryInfo.getUpdateType(),
                 updateCount);
 
-        cacheLastResults(queryResults);
-        return queryResults;
-    }
-
-    private synchronized void cacheLastResults(QueryResults queryResults)
-    {
-        // cache the last results
-        if (lastResult != null && lastResult.getNextUri() != null) {
-            lastResultPath = lastResult.getNextUri().getPath();
-        }
-        else {
-            lastResultPath = null;
-        }
+        // cache the new result
+        lastToken = token;
         lastResult = queryResults;
+
+        return queryResults;
     }
 
     private synchronized void closeExchangeClientIfNecessary(QueryInfo queryInfo)
@@ -586,14 +548,27 @@ class Query
         return Futures.transformAsync(queryManager.getStateChange(queryId, currentState), this::queryDoneFuture, directExecutor());
     }
 
-    private synchronized URI createNextResultsUri(String scheme, UriInfo uriInfo)
+    private synchronized URI createNextResultsUri(String scheme, UriInfo uriInfo, long nextToken)
     {
         return uriInfo.getBaseUriBuilder()
                 .scheme(scheme)
-                .replacePath("/v1/statement")
+                .replacePath("/v1/statement/executing")
                 .path(queryId.toString())
-                .path(slug)
-                .path(String.valueOf(resultId.incrementAndGet()))
+                .path(slug.makeSlug(EXECUTING_QUERY, nextToken))
+                .path(String.valueOf(nextToken))
+                .replaceQuery("")
+                .build();
+    }
+
+    private URI createPartialCancelUri(int stage, String scheme, UriInfo uriInfo, long nextToken)
+    {
+        return uriInfo.getBaseUriBuilder()
+                .scheme(scheme)
+                .replacePath("/v1/statement/executing/partialCancel")
+                .path(queryId.toString())
+                .path(String.valueOf(stage))
+                .path(slug.makeSlug(EXECUTING_QUERY, nextToken))
+                .path(String.valueOf(nextToken))
                 .replaceQuery("")
                 .build();
     }
@@ -601,7 +576,7 @@ class Query
     private static Column createColumn(String name, Type type)
     {
         TypeSignature signature = type.getTypeSignature();
-        return new Column(name, signature.toString(), toClientTypeSignature(signature));
+        return new Column(name, type.getDisplayName(), toClientTypeSignature(signature));
     }
 
     private static ClientTypeSignature toClientTypeSignature(TypeSignature signature)
@@ -619,7 +594,7 @@ class Query
             case NAMED_TYPE:
                 return ClientTypeSignatureParameter.ofNamedType(new NamedClientTypeSignature(
                         parameter.getNamedTypeSignature().getFieldName().map(value ->
-                                new RowFieldName(value.getName(), value.isDelimited())),
+                                new RowFieldName(value.getName())),
                         toClientTypeSignature(parameter.getNamedTypeSignature().getTypeSignature())));
             case LONG:
                 return ClientTypeSignatureParameter.ofLong(parameter.getLongLiteral());
@@ -708,30 +683,30 @@ class Query
         return nodes.build();
     }
 
-    private static URI findCancelableLeafStage(QueryInfo queryInfo)
+    private static Optional<Integer> findCancelableLeafStage(QueryInfo queryInfo)
     {
         // if query is running, find the leaf-most running stage
-        return queryInfo.getOutputStage().map(Query::findCancelableLeafStage).orElse(null);
+        return queryInfo.getOutputStage().flatMap(Query::findCancelableLeafStage);
     }
 
-    private static URI findCancelableLeafStage(StageInfo stage)
+    private static Optional<Integer> findCancelableLeafStage(StageInfo stage)
     {
         // if this stage is already done, we can't cancel it
         if (stage.getState().isDone()) {
-            return null;
+            return Optional.empty();
         }
 
         // attempt to find a cancelable sub stage
         // check in reverse order since build side of a join will be later in the list
         for (StageInfo subStage : Lists.reverse(stage.getSubStages())) {
-            URI leafStage = findCancelableLeafStage(subStage);
-            if (leafStage != null) {
+            Optional<Integer> leafStage = findCancelableLeafStage(subStage);
+            if (leafStage.isPresent()) {
                 return leafStage;
             }
         }
 
         // no matching sub stage, so return this stage
-        return stage.getSelf();
+        return Optional.of(stage.getStageId().getId());
     }
 
     private static QueryError toQueryError(QueryInfo queryInfo)
@@ -741,14 +716,15 @@ class Query
             return null;
         }
 
-        FailureInfo failure;
+        ExecutionFailureInfo executionFailure;
         if (queryInfo.getFailureInfo() != null) {
-            failure = queryInfo.getFailureInfo().toFailureInfo();
+            executionFailure = queryInfo.getFailureInfo();
         }
         else {
             log.warn("Query %s in state %s has no failure info", queryInfo.getQueryId(), state);
-            failure = toFailure(new RuntimeException(format("Query is %s (reason unknown)", state))).toFailureInfo();
+            executionFailure = toFailure(new RuntimeException(format("Query is %s (reason unknown)", state)));
         }
+        FailureInfo failure = executionFailure.toFailureInfo();
 
         ErrorCode errorCode;
         if (queryInfo.getErrorCode() != null) {
@@ -772,55 +748,5 @@ class Query
     {
         WarningCode code = warning.getWarningCode();
         return new Warning(new Warning.Code(code.getCode(), code.getName()), warning.getMessage());
-    }
-
-    private static class QuerySubmissionFuture
-            extends AbstractFuture<QueryInfo>
-    {
-        private final QueryId queryId;
-        private final String query;
-        private final SessionContext sessionContext;
-        private final QueryManager queryManager;
-
-        @GuardedBy("this")
-        private ListenableFuture<?> querySubmissionFuture;
-
-        public QuerySubmissionFuture(QueryId queryId, String query, SessionContext sessionContext, QueryManager queryManager)
-        {
-            this.queryId = requireNonNull(queryId, "queryId is null");
-            this.query = requireNonNull(query, "query is null");
-            this.sessionContext = requireNonNull(sessionContext, "sessionContext is null");
-            this.queryManager = requireNonNull(queryManager, "queryManager is null");
-        }
-
-        private synchronized void submitQuery()
-        {
-            if (querySubmissionFuture != null) {
-                return;
-            }
-
-            querySubmissionFuture = queryManager.createQuery(queryId, sessionContext, this.query);
-            Futures.addCallback(querySubmissionFuture, new FutureCallback<Object>()
-            {
-                @Override
-                public void onSuccess(Object result)
-                {
-                    set(null);
-                }
-
-                @Override
-                public void onFailure(Throwable t)
-                {
-                    setException(t);
-                }
-            }, directExecutor());
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning)
-        {
-            // query submission can not be canceled
-            return false;
-        }
     }
 }

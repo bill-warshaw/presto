@@ -16,6 +16,7 @@ package io.prestosql.plugin.jdbc;
 import com.google.common.base.Joiner;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.connector.ColumnHandle;
@@ -31,6 +32,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -42,11 +44,13 @@ import static java.util.stream.Collectors.joining;
 
 public class QueryBuilder
 {
+    private static final Logger log = Logger.get(QueryBuilder.class);
+
     // not all databases support booleans, so use 1=1 and 1=0 instead
     private static final String ALWAYS_TRUE = "1=1";
     private static final String ALWAYS_FALSE = "1=0";
 
-    private final String identifierQoute;
+    private final String identifierQuote;
 
     private static class TypeAndValue
     {
@@ -77,9 +81,9 @@ public class QueryBuilder
         }
     }
 
-    public QueryBuilder(String identifierQoute)
+    public QueryBuilder(String identifierQuote)
     {
-        this.identifierQoute = requireNonNull(identifierQoute, "identifierQoute is null");
+        this.identifierQuote = requireNonNull(identifierQuote, "identifierQuote is null");
     }
 
     public PreparedStatement buildSql(
@@ -91,34 +95,21 @@ public class QueryBuilder
             String table,
             List<JdbcColumnHandle> columns,
             TupleDomain<ColumnHandle> tupleDomain,
-            Optional<String> additionalPredicate)
+            Optional<String> additionalPredicate,
+            Function<String, String> sqlFunction)
             throws SQLException
     {
         StringBuilder sql = new StringBuilder();
 
-        String columnNames = columns.stream()
-                .map(JdbcColumnHandle::getColumnName)
-                .map(this::quote)
-                .collect(joining(", "));
-
         sql.append("SELECT ");
-        sql.append(columnNames);
-        if (columns.isEmpty()) {
-            sql.append("null");
-        }
+        sql.append(getProjection(columns));
 
         sql.append(" FROM ");
-        if (!isNullOrEmpty(catalog)) {
-            sql.append(quote(catalog)).append('.');
-        }
-        if (!isNullOrEmpty(schema)) {
-            sql.append(quote(schema)).append('.');
-        }
-        sql.append(quote(table));
+        sql.append(getRelation(catalog, schema, table));
 
         List<TypeAndValue> accumulator = new ArrayList<>();
 
-        List<String> clauses = toConjuncts(client, session, columns, tupleDomain, accumulator);
+        List<String> clauses = toConjuncts(client, session, connection, columns, tupleDomain, accumulator);
         if (additionalPredicate.isPresent()) {
             clauses = ImmutableList.<String>builder()
                     .addAll(clauses)
@@ -130,13 +121,15 @@ public class QueryBuilder
                     .append(Joiner.on(" AND ").join(clauses));
         }
 
-        PreparedStatement statement = client.getPreparedStatement(connection, sql.toString());
+        String query = sqlFunction.apply(sql.toString());
+        log.debug("Preparing query: %s", query);
+        PreparedStatement statement = client.getPreparedStatement(connection, query);
 
         for (int i = 0; i < accumulator.size(); i++) {
             TypeAndValue typeAndValue = accumulator.get(i);
             int parameterIndex = i + 1;
             Type type = typeAndValue.getType();
-            WriteFunction writeFunction = client.toPrestoType(session, typeAndValue.getTypeHandle())
+            WriteFunction writeFunction = client.toPrestoType(session, connection, typeAndValue.getTypeHandle())
                     .orElseThrow(() -> new VerifyException(format("Unsupported type %s with handle %s", type, typeAndValue.getTypeHandle())))
                     .getWriteFunction();
             Class<?> javaType = type.getJavaType();
@@ -164,20 +157,52 @@ public class QueryBuilder
         return statement;
     }
 
-    private static Domain pushDownDomain(JdbcClient client, ConnectorSession session, JdbcColumnHandle column, Domain domain)
+    protected String getProjection(List<JdbcColumnHandle> columns)
     {
-        return client.toPrestoType(session, column.getJdbcTypeHandle())
+        if (columns.isEmpty()) {
+            return "null";
+        }
+        return columns.stream()
+                .map(JdbcColumnHandle::getColumnName)
+                .map(this::quote)
+                .collect(joining(", "));
+    }
+
+    protected String getRelation(String catalog, String schema, String table)
+    {
+        StringBuilder sql = new StringBuilder();
+        if (!isNullOrEmpty(catalog)) {
+            sql.append(quote(catalog)).append('.');
+        }
+        if (!isNullOrEmpty(schema)) {
+            sql.append(quote(schema)).append('.');
+        }
+        return sql.append(quote(table)).toString();
+    }
+
+    private static Domain pushDownDomain(JdbcClient client, ConnectorSession session, Connection connection, JdbcColumnHandle column, Domain domain)
+    {
+        return client.toPrestoType(session, connection, column.getJdbcTypeHandle())
                 .orElseThrow(() -> new IllegalStateException(format("Unsupported type %s with handle %s", column.getColumnType(), column.getJdbcTypeHandle())))
                 .getPushdownConverter().apply(domain);
     }
 
-    private List<String> toConjuncts(JdbcClient client, ConnectorSession session, List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain, List<TypeAndValue> accumulator)
+    private List<String> toConjuncts(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            List<JdbcColumnHandle> columns,
+            TupleDomain<ColumnHandle> tupleDomain,
+            List<TypeAndValue> accumulator)
     {
+        if (tupleDomain.isNone()) {
+            return ImmutableList.of(ALWAYS_FALSE);
+        }
         ImmutableList.Builder<String> builder = ImmutableList.builder();
         for (JdbcColumnHandle column : columns) {
             Domain domain = tupleDomain.getDomains().get().get(column);
             if (domain != null) {
-                domain = pushDownDomain(client, session, column, domain);
+                domain = pushDownDomain(client, session, connection, column, domain);
                 builder.add(toPredicate(column.getColumnName(), domain, column, accumulator));
             }
         }
@@ -264,9 +289,9 @@ public class QueryBuilder
         return quote(columnName) + " " + operator + " ?";
     }
 
-    private String quote(String name)
+    protected String quote(String name)
     {
-        return identifierQoute + name.replace(identifierQoute, identifierQoute + identifierQoute) + identifierQoute;
+        return identifierQuote + name.replace(identifierQuote, identifierQuote + identifierQuote) + identifierQuote;
     }
 
     private static void bindValue(Object value, JdbcColumnHandle column, List<TypeAndValue> accumulator)

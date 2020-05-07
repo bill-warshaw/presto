@@ -46,6 +46,7 @@ import io.prestosql.sql.tree.ExplainFormat;
 import io.prestosql.sql.tree.ExplainOption;
 import io.prestosql.sql.tree.ExplainType;
 import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.FetchFirst;
 import io.prestosql.sql.tree.Grant;
 import io.prestosql.sql.tree.GrantRoles;
 import io.prestosql.sql.tree.GrantorSpecification;
@@ -59,8 +60,10 @@ import io.prestosql.sql.tree.JoinOn;
 import io.prestosql.sql.tree.JoinUsing;
 import io.prestosql.sql.tree.Lateral;
 import io.prestosql.sql.tree.LikeClause;
+import io.prestosql.sql.tree.Limit;
 import io.prestosql.sql.tree.NaturalJoin;
 import io.prestosql.sql.tree.Node;
+import io.prestosql.sql.tree.Offset;
 import io.prestosql.sql.tree.OrderBy;
 import io.prestosql.sql.tree.Prepare;
 import io.prestosql.sql.tree.PrincipalSpecification;
@@ -72,6 +75,7 @@ import io.prestosql.sql.tree.Relation;
 import io.prestosql.sql.tree.RenameColumn;
 import io.prestosql.sql.tree.RenameSchema;
 import io.prestosql.sql.tree.RenameTable;
+import io.prestosql.sql.tree.RenameView;
 import io.prestosql.sql.tree.ResetSession;
 import io.prestosql.sql.tree.Revoke;
 import io.prestosql.sql.tree.RevokeRoles;
@@ -82,6 +86,7 @@ import io.prestosql.sql.tree.Select;
 import io.prestosql.sql.tree.SelectItem;
 import io.prestosql.sql.tree.SetPath;
 import io.prestosql.sql.tree.SetRole;
+import io.prestosql.sql.tree.SetSchemaAuthorization;
 import io.prestosql.sql.tree.SetSession;
 import io.prestosql.sql.tree.ShowCatalogs;
 import io.prestosql.sql.tree.ShowColumns;
@@ -109,10 +114,10 @@ import io.prestosql.sql.tree.WithQuery;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.prestosql.sql.ExpressionFormatter.formatExpression;
 import static io.prestosql.sql.ExpressionFormatter.formatGroupBy;
@@ -127,23 +132,28 @@ public final class SqlFormatter
 
     private SqlFormatter() {}
 
-    public static String formatSql(Node root, Optional<List<Expression>> parameters)
+    public static String formatSql(Node root)
     {
         StringBuilder builder = new StringBuilder();
-        new Formatter(builder, parameters).process(root, 0);
+        new Formatter(builder).process(root, 0);
         return builder.toString();
+    }
+
+    static String formatName(QualifiedName name)
+    {
+        return name.getOriginalParts().stream()
+                .map(ExpressionFormatter::formatExpression)
+                .collect(joining("."));
     }
 
     private static class Formatter
             extends AstVisitor<Void, Integer>
     {
         private final StringBuilder builder;
-        private final Optional<List<Expression>> parameters;
 
-        public Formatter(StringBuilder builder, Optional<List<Expression>> parameters)
+        public Formatter(StringBuilder builder)
         {
             this.builder = builder;
-            this.parameters = parameters;
         }
 
         @Override
@@ -156,7 +166,7 @@ public final class SqlFormatter
         protected Void visitExpression(Expression node, Integer indent)
         {
             checkArgument(indent == 0, "visitExpression should only be called at root");
-            builder.append(formatExpression(node, parameters));
+            builder.append(formatExpression(node));
             return null;
         }
 
@@ -165,7 +175,7 @@ public final class SqlFormatter
         {
             builder.append("UNNEST(")
                     .append(node.getExpressions().stream()
-                            .map(expression -> formatExpression(expression, parameters))
+                            .map(ExpressionFormatter::formatExpression)
                             .collect(joining(", ")))
                     .append(")");
             if (node.isWithOrdinality()) {
@@ -244,7 +254,7 @@ public final class SqlFormatter
                 Iterator<WithQuery> queries = with.getQueries().iterator();
                 while (queries.hasNext()) {
                     WithQuery query = queries.next();
-                    append(indent, formatExpression(query.getName(), parameters));
+                    append(indent, formatExpression(query.getName()));
                     query.getColumnNames().ifPresent(columnNames -> appendAliasColumns(builder, columnNames));
                     builder.append(" AS ");
                     process(new TableSubquery(query.getQuery()), indent);
@@ -261,11 +271,13 @@ public final class SqlFormatter
                 process(node.getOrderBy().get(), indent);
             }
 
-            if (node.getLimit().isPresent()) {
-                append(indent, "LIMIT " + node.getLimit().get())
-                        .append('\n');
+            if (node.getOffset().isPresent()) {
+                process(node.getOffset().get(), indent);
             }
 
+            if (node.getLimit().isPresent()) {
+                process(node.getLimit().get(), indent);
+            }
             return null;
         }
 
@@ -284,7 +296,7 @@ public final class SqlFormatter
             builder.append('\n');
 
             if (node.getWhere().isPresent()) {
-                append(indent, "WHERE " + formatExpression(node.getWhere().get(), parameters))
+                append(indent, "WHERE " + formatExpression(node.getWhere().get()))
                         .append('\n');
             }
 
@@ -293,7 +305,7 @@ public final class SqlFormatter
             }
 
             if (node.getHaving().isPresent()) {
-                append(indent, "HAVING " + formatExpression(node.getHaving().get(), parameters))
+                append(indent, "HAVING " + formatExpression(node.getHaving().get()))
                         .append('\n');
             }
 
@@ -301,9 +313,12 @@ public final class SqlFormatter
                 process(node.getOrderBy().get(), indent);
             }
 
+            if (node.getOffset().isPresent()) {
+                process(node.getOffset().get(), indent);
+            }
+
             if (node.getLimit().isPresent()) {
-                append(indent, "LIMIT " + node.getLimit().get())
-                        .append('\n');
+                process(node.getLimit().get(), indent);
             }
             return null;
         }
@@ -311,7 +326,32 @@ public final class SqlFormatter
         @Override
         protected Void visitOrderBy(OrderBy node, Integer indent)
         {
-            append(indent, formatOrderBy(node, parameters))
+            append(indent, formatOrderBy(node))
+                    .append('\n');
+            return null;
+        }
+
+        @Override
+        protected Void visitOffset(Offset node, Integer indent)
+        {
+            append(indent, "OFFSET " + node.getRowCount() + " ROWS")
+                    .append('\n');
+            return null;
+        }
+
+        @Override
+        protected Void visitFetchFirst(FetchFirst node, Integer indent)
+        {
+            append(indent, "FETCH FIRST " + node.getRowCount().map(c -> c + " ROWS ").orElse("ROW "))
+                    .append(node.isWithTies() ? "WITH TIES" : "ONLY")
+                    .append('\n');
+            return null;
+        }
+
+        @Override
+        protected Void visitLimit(Limit node, Integer indent)
+        {
+            append(indent, "LIMIT " + node.getLimit())
                     .append('\n');
             return null;
         }
@@ -348,10 +388,10 @@ public final class SqlFormatter
         @Override
         protected Void visitSingleColumn(SingleColumn node, Integer indent)
         {
-            builder.append(formatExpression(node.getExpression(), parameters));
+            builder.append(formatExpression(node.getExpression()));
             if (node.getAlias().isPresent()) {
                 builder.append(' ')
-                        .append(formatExpression(node.getAlias().get(), parameters));
+                        .append(formatExpression(node.getAlias().get()));
             }
 
             return null;
@@ -360,7 +400,18 @@ public final class SqlFormatter
         @Override
         protected Void visitAllColumns(AllColumns node, Integer context)
         {
-            builder.append(node.toString());
+            node.getTarget().ifPresent(value -> builder
+                    .append(formatExpression(value))
+                    .append("."));
+            builder.append("*");
+
+            if (!node.getAliases().isEmpty()) {
+                builder.append(" AS (")
+                        .append(Joiner.on(", ").join(node.getAliases().stream()
+                                .map(ExpressionFormatter::formatExpression)
+                                .collect(toImmutableList())))
+                        .append(")");
+            }
 
             return null;
         }
@@ -407,7 +458,7 @@ public final class SqlFormatter
                 else if (criteria instanceof JoinOn) {
                     JoinOn on = (JoinOn) criteria;
                     builder.append(" ON ")
-                            .append(formatExpression(on.getExpression(), parameters));
+                            .append(formatExpression(on.getExpression()));
                 }
                 else if (!(criteria instanceof NaturalJoin)) {
                     throw new UnsupportedOperationException("unknown join criteria: " + criteria);
@@ -424,10 +475,10 @@ public final class SqlFormatter
         @Override
         protected Void visitAliasedRelation(AliasedRelation node, Integer indent)
         {
-            process(node.getRelation(), indent);
+            processRelationSuffix(node.getRelation(), indent);
 
             builder.append(' ')
-                    .append(formatExpression(node.getAlias(), parameters));
+                    .append(formatExpression(node.getAlias()));
             appendAliasColumns(builder, node.getColumnNames());
 
             return null;
@@ -436,7 +487,7 @@ public final class SqlFormatter
         @Override
         protected Void visitSampledRelation(SampledRelation node, Integer indent)
         {
-            process(node.getRelation(), indent);
+            processRelationSuffix(node.getRelation(), indent);
 
             builder.append(" TABLESAMPLE ")
                     .append(node.getType())
@@ -445,6 +496,18 @@ public final class SqlFormatter
                     .append(')');
 
             return null;
+        }
+
+        private void processRelationSuffix(Relation relation, Integer indent)
+        {
+            if ((relation instanceof AliasedRelation) || (relation instanceof SampledRelation)) {
+                builder.append("( ");
+                process(relation, indent + 1);
+                append(indent, ")");
+            }
+            else {
+                process(relation, indent);
+            }
         }
 
         @Override
@@ -458,7 +521,7 @@ public final class SqlFormatter
                         .append(indentString(indent))
                         .append(first ? "  " : ", ");
 
-                builder.append(formatExpression(row, parameters));
+                builder.append(formatExpression(row));
                 first = false;
             }
             builder.append('\n');
@@ -542,6 +605,10 @@ public final class SqlFormatter
             builder.append("VIEW ")
                     .append(formatName(node.getName()));
 
+            node.getComment().ifPresent(comment ->
+                    builder.append(" COMMENT ")
+                            .append(formatStringLiteral(comment)));
+
             node.getSecurity().ifPresent(security ->
                     builder.append(" SECURITY ")
                             .append(security.toString()));
@@ -549,6 +616,17 @@ public final class SqlFormatter
             builder.append(" AS\n");
 
             process(node.getQuery(), indent);
+
+            return null;
+        }
+
+        @Override
+        protected Void visitRenameView(RenameView node, Integer context)
+        {
+            builder.append("ALTER VIEW ")
+                    .append(node.getSource())
+                    .append(" RENAME TO ")
+                    .append(node.getTarget());
 
             return null;
         }
@@ -607,6 +685,10 @@ public final class SqlFormatter
 
             node.getLikePattern().ifPresent((value) ->
                     builder.append(" LIKE ")
+                            .append(formatStringLiteral(value)));
+
+            node.getEscape().ifPresent((value) ->
+                    builder.append(" ESCAPE ")
                             .append(formatStringLiteral(value)));
 
             return null;
@@ -674,6 +756,14 @@ public final class SqlFormatter
             builder.append("SHOW COLUMNS FROM ")
                     .append(formatName(node.getTable()));
 
+            node.getLikePattern().ifPresent(value ->
+                    builder.append(" LIKE ")
+                            .append(formatStringLiteral(value)));
+
+            node.getEscape().ifPresent(value ->
+                    builder.append(" ESCAPE ")
+                            .append(formatStringLiteral(value)));
+
             return null;
         }
 
@@ -691,6 +781,14 @@ public final class SqlFormatter
         {
             builder.append("SHOW FUNCTIONS");
 
+            node.getLikePattern().ifPresent((value) ->
+                    builder.append(" LIKE ")
+                            .append(formatStringLiteral(value)));
+
+            node.getEscape().ifPresent((value) ->
+                    builder.append(" ESCAPE ")
+                            .append(formatStringLiteral(value)));
+
             return null;
         }
 
@@ -698,6 +796,14 @@ public final class SqlFormatter
         protected Void visitShowSession(ShowSession node, Integer context)
         {
             builder.append("SHOW SESSION");
+
+            node.getLikePattern().ifPresent((value) ->
+                    builder.append(" LIKE ")
+                            .append(formatStringLiteral(value)));
+
+            node.getEscape().ifPresent((value) ->
+                    builder.append(" ESCAPE ")
+                            .append(formatStringLiteral(value)));
 
             return null;
         }
@@ -710,7 +816,7 @@ public final class SqlFormatter
 
             if (node.getWhere().isPresent()) {
                 builder.append(" WHERE ")
-                        .append(formatExpression(node.getWhere().get(), parameters));
+                        .append(formatExpression(node.getWhere().get()));
             }
 
             return null;
@@ -724,6 +830,10 @@ public final class SqlFormatter
                 builder.append("IF NOT EXISTS ");
             }
             builder.append(formatName(node.getSchemaName()));
+            if (node.getPrincipal().isPresent()) {
+                builder.append("\nAUTHORIZATION ")
+                        .append(formatPrincipal(node.getPrincipal().get()));
+            }
             builder.append(formatPropertiesMultiLine(node.getProperties()));
 
             return null;
@@ -749,7 +859,18 @@ public final class SqlFormatter
             builder.append("ALTER SCHEMA ")
                     .append(formatName(node.getSource()))
                     .append(" RENAME TO ")
-                    .append(formatExpression(node.getTarget(), parameters));
+                    .append(formatExpression(node.getTarget()));
+
+            return null;
+        }
+
+        @Override
+        protected Void visitSetSchemaAuthorization(SetSchemaAuthorization node, Integer context)
+        {
+            builder.append("ALTER SCHEMA ")
+                    .append(formatName(node.getSource()))
+                    .append(" SET AUTHORIZATION ")
+                    .append(formatPrincipal(node.getPrincipal()));
 
             return null;
         }
@@ -764,12 +885,15 @@ public final class SqlFormatter
             builder.append(formatName(node.getName()));
 
             if (node.getColumnAliases().isPresent()) {
-                String columnList = node.getColumnAliases().get().stream().map(element -> formatExpression(element, parameters)).collect(joining(", "));
+                String columnList = node.getColumnAliases().get().stream()
+                        .map(ExpressionFormatter::formatExpression)
+                        .collect(joining(", "));
                 builder.append(format("( %s )", columnList));
             }
 
             if (node.getComment().isPresent()) {
-                builder.append("\nCOMMENT " + formatStringLiteral(node.getComment().get()));
+                builder.append("\nCOMMENT ")
+                        .append(formatStringLiteral(node.getComment().get()));
             }
 
             builder.append(formatPropertiesMultiLine(node.getProperties()));
@@ -820,7 +944,8 @@ public final class SqlFormatter
             builder.append("\n").append(")");
 
             if (node.getComment().isPresent()) {
-                builder.append("\nCOMMENT " + formatStringLiteral(node.getComment().get()));
+                builder.append("\nCOMMENT ")
+                        .append(formatStringLiteral(node.getComment().get()));
             }
 
             builder.append(formatPropertiesMultiLine(node.getProperties()));
@@ -836,8 +961,8 @@ public final class SqlFormatter
 
             String propertyList = properties.stream()
                     .map(element -> INDENT +
-                            formatExpression(element.getName(), parameters) + " = " +
-                            formatExpression(element.getValue(), parameters))
+                            formatExpression(element.getName()) + " = " +
+                            formatExpression(element.getValue()))
                     .collect(joining(",\n"));
 
             return "\nWITH (\n" + propertyList + "\n)";
@@ -850,30 +975,17 @@ public final class SqlFormatter
             }
 
             String propertyList = properties.stream()
-                    .map(element -> formatExpression(element.getName(), parameters) + " = " +
-                            formatExpression(element.getValue(), parameters))
+                    .map(element -> formatExpression(element.getName()) + " = " +
+                            formatExpression(element.getValue()))
                     .collect(joining(", "));
 
             return " WITH ( " + propertyList + " )";
         }
 
-        private static String formatName(Identifier name)
-        {
-            String delimiter = name.isDelimited() ? "\"" : "";
-            return delimiter + name.getValue().replace("\"", "\"\"") + delimiter;
-        }
-
-        private static String formatName(QualifiedName name)
-        {
-            return name.getOriginalParts().stream()
-                    .map(Formatter::formatName)
-                    .collect(joining("."));
-        }
-
         private String formatColumnDefinition(ColumnDefinition column)
         {
             StringBuilder sb = new StringBuilder()
-                    .append(formatExpression(column.getName(), parameters))
+                    .append(formatExpression(column.getName()))
                     .append(" ").append(column.getType());
             if (!column.isNullable()) {
                 sb.append(" NOT NULL");
@@ -969,7 +1081,7 @@ public final class SqlFormatter
             builder.append("ALTER TABLE ")
                     .append(formatName(node.getTable()))
                     .append(" DROP COLUMN ")
-                    .append(formatExpression(node.getColumn(), parameters));
+                    .append(formatExpression(node.getColumn()));
 
             return null;
         }
@@ -1019,7 +1131,7 @@ public final class SqlFormatter
             builder.append("SET SESSION ")
                     .append(node.getName())
                     .append(" = ")
-                    .append(formatExpression(node.getValue(), parameters));
+                    .append(formatExpression(node.getValue()));
 
             return null;
         }
@@ -1040,7 +1152,7 @@ public final class SqlFormatter
                 builder.append(node.getName().get())
                         .append(" => ");
             }
-            builder.append(formatExpression(node.getValue(), parameters));
+            builder.append(formatExpression(node.getValue()));
 
             return null;
         }
@@ -1153,7 +1265,7 @@ public final class SqlFormatter
             builder.append(node.getGrantees().stream()
                     .map(Formatter::formatPrincipal)
                     .collect(joining(", ")));
-            if (node.isWithAdminOption()) {
+            if (node.isAdminOption()) {
                 builder.append(" WITH ADMIN OPTION");
             }
             if (node.getGrantor().isPresent()) {
@@ -1166,7 +1278,7 @@ public final class SqlFormatter
         protected Void visitRevokeRoles(RevokeRoles node, Integer context)
         {
             builder.append("REVOKE ");
-            if (node.isAdminOptionFor()) {
+            if (node.isAdminOption()) {
                 builder.append("ADMIN OPTION FOR ");
             }
             builder.append(node.getRoles().stream()
@@ -1340,7 +1452,7 @@ public final class SqlFormatter
     {
         if ((columns != null) && (!columns.isEmpty())) {
             String formattedColumns = columns.stream()
-                    .map(name -> formatExpression(name, Optional.empty()))
+                    .map(ExpressionFormatter::formatExpression)
                     .collect(Collectors.joining(", "));
 
             builder.append(" (")

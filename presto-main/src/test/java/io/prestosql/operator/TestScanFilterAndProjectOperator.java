@@ -20,8 +20,6 @@ import io.prestosql.block.BlockAssertions;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.execution.Lifespan;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.MetadataManager;
-import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.Split;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.operator.index.PageRecordSet;
@@ -36,10 +34,12 @@ import io.prestosql.spi.block.LazyBlock;
 import io.prestosql.spi.connector.ConnectorPageSource;
 import io.prestosql.spi.connector.FixedPageSource;
 import io.prestosql.spi.connector.RecordPageSource;
+import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.sql.gen.ExpressionCompiler;
 import io.prestosql.sql.gen.PageFunctionCompiler;
 import io.prestosql.sql.planner.plan.PlanNodeId;
 import io.prestosql.sql.relational.RowExpression;
+import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.TestingSplit;
 import org.testng.annotations.Test;
@@ -51,13 +51,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Supplier;
 
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.prestosql.RowPagesBuilder.rowPagesBuilder;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.block.BlockAssertions.toValues;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
-import static io.prestosql.metadata.Signature.internalScalarFunction;
 import static io.prestosql.operator.OperatorAssertion.toMaterializedResult;
 import static io.prestosql.operator.PageAssertions.assertPageEquals;
 import static io.prestosql.operator.project.PageProcessor.MAX_BATCH_SIZE;
@@ -65,6 +63,7 @@ import static io.prestosql.spi.function.OperatorType.EQUAL;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
+import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.prestosql.sql.relational.Expressions.call;
 import static io.prestosql.sql.relational.Expressions.constant;
 import static io.prestosql.sql.relational.Expressions.field;
@@ -81,7 +80,7 @@ import static org.testng.Assert.assertTrue;
 public class TestScanFilterAndProjectOperator
         extends AbstractTestFunctions
 {
-    private final MetadataManager metadata = createTestMetadataManager();
+    private final Metadata metadata = createTestMetadataManager();
     private final ExpressionCompiler expressionCompiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
     private ExecutorService executor;
     private ScheduledExecutorService scheduledExecutor;
@@ -106,13 +105,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new FixedPageSource(ImmutableList.of(input)),
+                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
                 cursorProcessor,
                 pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(VARCHAR),
-                new DataSize(0, BYTE),
+                DataSize.ofBytes(0),
                 0);
 
         SourceOperator operator = factory.createOperator(driverContext);
@@ -137,7 +137,7 @@ public class TestScanFilterAndProjectOperator
                 .build();
 
         RowExpression filter = call(
-                Signature.internalOperator(EQUAL, BOOLEAN.getTypeSignature(), ImmutableList.of(BIGINT.getTypeSignature(), BIGINT.getTypeSignature())),
+                metadata.resolveOperator(EQUAL, ImmutableList.of(BIGINT, BIGINT)),
                 BOOLEAN,
                 field(0, BIGINT),
                 constant(10L, BIGINT));
@@ -149,13 +149,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new FixedPageSource(input),
+                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(input),
                 cursorProcessor,
                 pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(BIGINT),
-                new DataSize(64, KILOBYTE),
+                DataSize.of(64, KILOBYTE),
                 2);
 
         SourceOperator operator = factory.createOperator(newDriverContext());
@@ -180,7 +181,7 @@ public class TestScanFilterAndProjectOperator
     {
         Block inputBlock = BlockAssertions.createLongSequenceBlock(0, 100);
         // If column 1 is loaded, test will fail
-        Page input = new Page(100, inputBlock, new LazyBlock(100, lazyBlock -> {
+        Page input = new Page(100, inputBlock, new LazyBlock(100, () -> {
             throw new AssertionError("Lazy block should not be loaded");
         }));
         DriverContext driverContext = newDriverContext();
@@ -193,13 +194,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new SinglePagePageSource(input),
+                (session, split, table, columns, dynamicFilter) -> new SinglePagePageSource(input),
                 cursorProcessor,
                 () -> pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(BIGINT),
-                new DataSize(0, BYTE),
+                DataSize.ofBytes(0),
                 0);
 
         SourceOperator operator = factory.createOperator(driverContext);
@@ -227,13 +229,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(VARCHAR), input)),
+                (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(VARCHAR), input)),
                 cursorProcessor,
                 pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(VARCHAR),
-                new DataSize(0, BYTE),
+                DataSize.ofBytes(0),
                 0);
 
         SourceOperator operator = factory.createOperator(driverContext);
@@ -264,13 +267,13 @@ public class TestScanFilterAndProjectOperator
             }));
         }
         Metadata metadata = functionAssertions.getMetadata();
-        metadata.getFunctionRegistry().addFunctions(functions.build());
+        metadata.addFunctions(functions.build());
 
         // match each column with a projection
         ExpressionCompiler expressionCompiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
         ImmutableList.Builder<RowExpression> projections = ImmutableList.builder();
         for (int i = 0; i < totalColumns; i++) {
-            projections.add(call(internalScalarFunction("generic_long_page_col" + i, BIGINT.getTypeSignature(), ImmutableList.of(BIGINT.getTypeSignature())), BIGINT, field(0, BIGINT)));
+            projections.add(call(metadata.resolveFunction(QualifiedName.of("generic_long_page_col" + i), fromTypes(BIGINT)), BIGINT, field(0, BIGINT)));
         }
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(Optional.empty(), projections.build(), "key");
         Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(Optional.empty(), projections.build(), MAX_BATCH_SIZE);
@@ -279,13 +282,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new FixedPageSource(ImmutableList.of(input)),
+                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
                 cursorProcessor,
                 pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(BIGINT),
-                new DataSize(0, BYTE),
+                DataSize.ofBytes(0),
                 0);
 
         SourceOperator operator = factory.createOperator(driverContext);
@@ -327,14 +331,14 @@ public class TestScanFilterAndProjectOperator
 
         // set up generic long function with a callback to force yield
         Metadata metadata = functionAssertions.getMetadata();
-        metadata.getFunctionRegistry().addFunctions(ImmutableList.of(new GenericLongFunction("record_cursor", value -> {
+        metadata.addFunctions(ImmutableList.of(new GenericLongFunction("record_cursor", value -> {
             driverContext.getYieldSignal().forceYieldForTesting();
             return value;
         })));
         ExpressionCompiler expressionCompiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
 
         List<RowExpression> projections = ImmutableList.of(call(
-                internalScalarFunction("generic_long_record_cursor", BIGINT.getTypeSignature(), ImmutableList.of(BIGINT.getTypeSignature())),
+                metadata.resolveFunction(QualifiedName.of("generic_long_record_cursor"), fromTypes(BIGINT)),
                 BIGINT,
                 field(0, BIGINT)));
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(Optional.empty(), projections, "key");
@@ -344,13 +348,14 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(BIGINT), input)),
+                (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(BIGINT), input)),
                 cursorProcessor,
                 pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
+                TupleDomain::all,
                 ImmutableList.of(BIGINT),
-                new DataSize(0, BYTE),
+                DataSize.ofBytes(0),
                 0);
 
         SourceOperator operator = factory.createOperator(driverContext);

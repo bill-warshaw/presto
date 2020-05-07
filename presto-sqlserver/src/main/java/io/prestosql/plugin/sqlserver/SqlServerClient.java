@@ -14,11 +14,10 @@
 package io.prestosql.plugin.sqlserver;
 
 import com.google.common.base.Joiner;
-import com.microsoft.sqlserver.jdbc.SQLServerDriver;
 import io.prestosql.plugin.jdbc.BaseJdbcClient;
 import io.prestosql.plugin.jdbc.BaseJdbcConfig;
 import io.prestosql.plugin.jdbc.ColumnMapping;
-import io.prestosql.plugin.jdbc.DriverConnectionFactory;
+import io.prestosql.plugin.jdbc.ConnectionFactory;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
 import io.prestosql.plugin.jdbc.JdbcIdentity;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
@@ -35,17 +34,20 @@ import io.prestosql.spi.type.VarcharType;
 import javax.inject.Inject;
 
 import java.sql.Connection;
-import java.sql.SQLException;
+import java.util.List;
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.function.UnaryOperator;
 
-import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.charWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.Varchars.isVarcharType;
 import static java.lang.String.format;
+import static java.util.stream.Collectors.joining;
 
 public class SqlServerClient
         extends BaseJdbcClient
@@ -55,60 +57,70 @@ public class SqlServerClient
     // SqlServer supports 2100 parameters in prepared statement, let's create a space for about 4 big IN predicates
     private static final int SQL_SERVER_MAX_LIST_EXPRESSIONS = 500;
 
-    // TODO improve this by calling Domain#simplify
-    private static final UnaryOperator<Domain> DISABLE_UNSUPPORTED_PUSHDOWN = domain -> {
+    private static final UnaryOperator<Domain> SIMPLIFY_UNSUPPORTED_PUSHDOWN = domain -> {
         if (domain.getValues().getRanges().getRangeCount() <= SQL_SERVER_MAX_LIST_EXPRESSIONS) {
             return domain;
         }
-        return Domain.all(domain.getType());
+        return domain.simplify();
     };
 
     @Inject
-    public SqlServerClient(BaseJdbcConfig config)
+    public SqlServerClient(BaseJdbcConfig config, ConnectionFactory connectionFactory)
     {
-        super(config, "\"", new DriverConnectionFactory(new SQLServerDriver(), config));
+        super(config, "\"", connectionFactory);
     }
 
     @Override
     protected void renameTable(JdbcIdentity identity, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
     {
+        if (!schemaName.equals(newTable.getSchemaName())) {
+            throw new PrestoException(NOT_SUPPORTED, "Table rename across schemas is not supported");
+        }
+
         String sql = format(
                 "sp_rename %s, %s",
                 singleQuote(catalogName, schemaName, tableName),
                 singleQuote(newTable.getTableName()));
-        try (Connection connection = connectionFactory.openConnection(identity)) {
-            execute(connection, sql);
-        }
-        catch (SQLException e) {
-            throw new PrestoException(JDBC_ERROR, e);
-        }
+        execute(identity, sql);
     }
 
     @Override
     public void renameColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
     {
-        try (Connection connection = connectionFactory.openConnection(identity)) {
-            String sql = format(
-                    "sp_rename %s, %s, 'COLUMN'",
-                    singleQuote(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName(), jdbcColumn.getColumnName()),
-                    singleQuote(newColumnName));
-            execute(connection, sql);
-        }
-        catch (SQLException e) {
-            throw new PrestoException(JDBC_ERROR, e);
-        }
+        String sql = format(
+                "sp_rename %s, %s, 'COLUMN'",
+                singleQuote(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName(), jdbcColumn.getColumnName()),
+                singleQuote(newColumnName));
+        execute(identity, sql);
     }
 
     @Override
-    public Optional<ColumnMapping> toPrestoType(ConnectorSession session, JdbcTypeHandle type)
+    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
     {
+        String sql = format(
+                "SELECT %s INTO %s FROM %s WHERE 0 = 1",
+                columnNames.stream()
+                        .map(this::quoted)
+                        .collect(joining(", ")),
+                quoted(catalogName, schemaName, newTableName),
+                quoted(catalogName, schemaName, tableName));
+        execute(connection, sql);
+    }
+
+    @Override
+    public Optional<ColumnMapping> toPrestoType(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
+    {
+        Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
+        if (mapping.isPresent()) {
+            return mapping;
+        }
         // TODO implement proper type mapping
-        return super.toPrestoType(session, type)
+        return super.toPrestoType(session, connection, typeHandle)
                 .map(columnMapping -> new ColumnMapping(
                         columnMapping.getType(),
                         columnMapping.getReadFunction(),
                         columnMapping.getWriteFunction(),
-                        DISABLE_UNSUPPORTED_PUSHDOWN));
+                        SIMPLIFY_UNSUPPORTED_PUSHDOWN));
     }
 
     @Override
@@ -144,6 +156,22 @@ public class SqlServerClient
 
         // TODO implement proper type mapping
         return super.toWriteMapping(session, type);
+    }
+
+    @Override
+    protected Optional<BiFunction<String, Long, String>> limitFunction()
+    {
+        return Optional.of((sql, limit) -> {
+            String start = "SELECT ";
+            checkArgument(sql.startsWith(start));
+            return "SELECT TOP " + limit + " " + sql.substring(start.length());
+        });
+    }
+
+    @Override
+    public boolean isLimitGuaranteed(ConnectorSession session)
+    {
+        return true;
     }
 
     private static String singleQuote(String... objects)

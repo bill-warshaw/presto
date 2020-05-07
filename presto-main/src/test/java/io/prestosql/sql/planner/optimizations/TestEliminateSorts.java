@@ -86,12 +86,13 @@ public class TestEliminateSorts
         assertUnitPlan(sql, pattern);
     }
 
-    public void assertUnitPlan(@Language("SQL") String sql, PlanMatchPattern pattern)
+    private void assertUnitPlan(@Language("SQL") String sql, PlanMatchPattern pattern)
     {
+        TypeAnalyzer typeAnalyzer = new TypeAnalyzer(new SqlParser(), getQueryRunner().getMetadata());
         List<PlanOptimizer> optimizers = ImmutableList.of(
-                new UnaliasSymbolReferences(),
-                new AddExchanges(getQueryRunner().getMetadata(), new TypeAnalyzer(new SqlParser(), getQueryRunner().getMetadata())),
-                new PruneUnreferencedOutputs(),
+                new UnaliasSymbolReferences(getQueryRunner().getMetadata()),
+                new AddExchanges(getQueryRunner().getMetadata(), typeAnalyzer),
+                new PruneUnreferencedOutputs(getQueryRunner().getMetadata(), typeAnalyzer),
                 new IterativeOptimizer(
                         new RuleStatsRecorder(),
                         getQueryRunner().getStatsCalculator(),

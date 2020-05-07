@@ -15,7 +15,7 @@
 package io.prestosql.sql.gen;
 
 import io.airlift.bytecode.BytecodeNode;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.gen.LambdaBytecodeGenerator.CompiledLambda;
 import io.prestosql.sql.relational.LambdaDefinitionExpression;
@@ -30,16 +30,16 @@ public class BindCodeGenerator
         implements BytecodeGenerator
 {
     private final Map<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap;
-    private final Class lambdaInterface;
+    private final Class<?> lambdaInterface;
 
-    public BindCodeGenerator(Map<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap, Class lambdaInterface)
+    public BindCodeGenerator(Map<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap, Class<?> lambdaInterface)
     {
         this.compiledLambdaMap = compiledLambdaMap;
         this.lambdaInterface = lambdaInterface;
     }
 
     @Override
-    public BytecodeNode generateExpression(Signature signature, BytecodeGeneratorContext context, Type returnType, List<RowExpression> arguments)
+    public BytecodeNode generateExpression(ResolvedFunction resolvedFunction, BytecodeGeneratorContext context, Type returnType, List<RowExpression> arguments)
     {
         // Bind expression is used to generate captured lambda.
         // It takes the captured values and the uncaptured lambda, and produces captured lambda as the output.

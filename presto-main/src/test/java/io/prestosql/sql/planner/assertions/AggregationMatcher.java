@@ -82,7 +82,7 @@ public class AggregationMatcher
         List<Symbol> aggregationsWithMask = aggregationNode.getAggregations()
                 .entrySet()
                 .stream()
-                .filter(entry -> entry.getValue().getCall().isDistinct())
+                .filter(entry -> entry.getValue().isDistinct())
                 .map(entry -> entry.getKey())
                 .collect(Collectors.toList());
 
@@ -101,6 +101,10 @@ public class AggregationMatcher
         }
 
         if (!matches(preGroupedSymbols, aggregationNode.getPreGroupedSymbols(), symbolAliases)) {
+            return NO_MATCH;
+        }
+
+        if (!preGroupedSymbols.isEmpty() && !aggregationNode.isStreamable()) {
             return NO_MATCH;
         }
 

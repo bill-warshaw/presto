@@ -13,11 +13,12 @@
  */
 package io.prestosql.operator.aggregation;
 
+import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.FunctionArgumentDefinition;
 import io.prestosql.metadata.LongVariableConstraint;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.TypeVariableConstraint;
 import io.prestosql.operator.ParametricImplementation;
@@ -32,8 +33,8 @@ import io.prestosql.spi.function.BlockPosition;
 import io.prestosql.spi.function.OutputFunction;
 import io.prestosql.spi.function.SqlType;
 import io.prestosql.spi.function.TypeParameter;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.TypeSignature;
+import io.prestosql.util.Reflection;
 
 import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
@@ -49,7 +50,9 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INDEX;
+import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.NULLABLE_BLOCK_INPUT_CHANNEL;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.inputChannelParameterType;
 import static io.prestosql.operator.annotations.FunctionsParserHelper.containsAnnotation;
@@ -59,7 +62,6 @@ import static io.prestosql.operator.annotations.ImplementationDependency.Factory
 import static io.prestosql.operator.annotations.ImplementationDependency.getImplementationDependencyAnnotation;
 import static io.prestosql.operator.annotations.ImplementationDependency.isImplementationDependencyAnnotation;
 import static io.prestosql.operator.annotations.ImplementationDependency.validateImplementationDependencyAnnotation;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.util.Objects.requireNonNull;
 
@@ -93,26 +95,31 @@ public class AggregationImplementation
     private final Class<?> definitionClass;
     private final Class<?> stateClass;
     private final MethodHandle inputFunction;
+    private final Optional<MethodHandle> removeInputFunction;
     private final MethodHandle outputFunction;
     private final MethodHandle combineFunction;
     private final Optional<MethodHandle> stateSerializerFactory;
     private final List<AggregateNativeContainerType> argumentNativeContainerTypes;
     private final List<ImplementationDependency> inputDependencies;
+    private final List<ImplementationDependency> removeInputDependencies;
     private final List<ImplementationDependency> combineDependencies;
     private final List<ImplementationDependency> outputDependencies;
     private final List<ImplementationDependency> stateSerializerFactoryDependencies;
     private final List<ParameterType> inputParameterMetadataTypes;
+    private final ImmutableList<FunctionArgumentDefinition> argumentDefinitions;
 
     public AggregationImplementation(
             Signature signature,
             Class<?> definitionClass,
             Class<?> stateClass,
             MethodHandle inputFunction,
+            Optional<MethodHandle> removeInputFunction,
             MethodHandle outputFunction,
             MethodHandle combineFunction,
             Optional<MethodHandle> stateSerializerFactory,
             List<AggregateNativeContainerType> argumentNativeContainerTypes,
             List<ImplementationDependency> inputDependencies,
+            List<ImplementationDependency> removeInputDependencies,
             List<ImplementationDependency> combineDependencies,
             List<ImplementationDependency> outputDependencies,
             List<ImplementationDependency> stateSerializerFactoryDependencies,
@@ -122,15 +129,22 @@ public class AggregationImplementation
         this.definitionClass = requireNonNull(definitionClass, "definition class cannot be null");
         this.stateClass = requireNonNull(stateClass, "stateClass cannot be null");
         this.inputFunction = requireNonNull(inputFunction, "inputFunction cannot be null");
+        this.removeInputFunction = requireNonNull(removeInputFunction, "removeInputFunction cannot be null");
         this.outputFunction = requireNonNull(outputFunction, "outputFunction cannot be null");
         this.combineFunction = requireNonNull(combineFunction, "combineFunction cannot be null");
         this.stateSerializerFactory = requireNonNull(stateSerializerFactory, "stateSerializerFactory cannot be null");
         this.argumentNativeContainerTypes = requireNonNull(argumentNativeContainerTypes, "argumentNativeContainerTypes cannot be null");
         this.inputDependencies = requireNonNull(inputDependencies, "inputDependencies cannot be null");
+        this.removeInputDependencies = requireNonNull(removeInputDependencies, "removeInputDependencies cannot be null");
         this.outputDependencies = requireNonNull(outputDependencies, "outputDependencies cannot be null");
         this.combineDependencies = requireNonNull(combineDependencies, "combineDependencies cannot be null");
         this.stateSerializerFactoryDependencies = requireNonNull(stateSerializerFactoryDependencies, "stateSerializerFactoryDependencies cannot be null");
         this.inputParameterMetadataTypes = requireNonNull(inputParameterMetadataTypes, "inputParameterMetadataTypes cannot be null");
+        this.argumentDefinitions = inputParameterMetadataTypes.stream()
+                .filter(parameterType -> parameterType != BLOCK_INDEX && parameterType != STATE)
+                .map(NULLABLE_BLOCK_INPUT_CHANNEL::equals)
+                .map(FunctionArgumentDefinition::new)
+                .collect(toImmutableList());
     }
 
     @Override
@@ -143,6 +157,19 @@ public class AggregationImplementation
     public boolean hasSpecializedTypeParameters()
     {
         return false;
+    }
+
+    @Override
+    public final boolean isNullable()
+    {
+        // for now all aggregation functions are considered nullable
+        return true;
+    }
+
+    @Override
+    public List<FunctionArgumentDefinition> getArgumentDefinitions()
+    {
+        return argumentDefinitions;
     }
 
     public Class<?> getDefinitionClass()
@@ -158,6 +185,11 @@ public class AggregationImplementation
     public MethodHandle getInputFunction()
     {
         return inputFunction;
+    }
+
+    public Optional<MethodHandle> getRemoveInputFunction()
+    {
+        return removeInputFunction;
     }
 
     public MethodHandle getOutputFunction()
@@ -180,6 +212,11 @@ public class AggregationImplementation
         return inputDependencies;
     }
 
+    public List<ImplementationDependency> getRemoveInputDependencies()
+    {
+        return removeInputDependencies;
+    }
+
     public List<ImplementationDependency> getOutputDependencies()
     {
         return outputDependencies;
@@ -200,20 +237,20 @@ public class AggregationImplementation
         return inputParameterMetadataTypes;
     }
 
-    public boolean areTypesAssignable(Signature boundSignature, BoundVariables variables, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public boolean areTypesAssignable(Signature boundSignature, BoundVariables variables, Metadata metadata)
     {
         checkState(argumentNativeContainerTypes.size() == boundSignature.getArgumentTypes().size(), "Number of argument assigned to AggregationImplementation is different than number parsed from annotations.");
 
         // TODO specialized functions variants support is missing here
         for (int i = 0; i < boundSignature.getArgumentTypes().size(); i++) {
-            Class<?> argumentType = typeManager.getType(boundSignature.getArgumentTypes().get(i)).getJavaType();
+            Class<?> argumentType = metadata.getType(boundSignature.getArgumentTypes().get(i)).getJavaType();
             Class<?> methodDeclaredType = argumentNativeContainerTypes.get(i).getJavaType();
             boolean isCurrentBlockPosition = argumentNativeContainerTypes.get(i).isBlockPosition();
 
-            if (isCurrentBlockPosition && Block.class.isAssignableFrom(methodDeclaredType)) {
+            if (isCurrentBlockPosition && methodDeclaredType.isAssignableFrom(Block.class)) {
                 continue;
             }
-            if (!isCurrentBlockPosition && argumentType.isAssignableFrom(methodDeclaredType)) {
+            if (!isCurrentBlockPosition && methodDeclaredType.isAssignableFrom(argumentType)) {
                 continue;
             }
             return false;
@@ -227,11 +264,13 @@ public class AggregationImplementation
         private final Class<?> aggregationDefinition;
         private final Class<?> stateClass;
         private final MethodHandle inputHandle;
+        private final Optional<MethodHandle> removeInputHandle;
         private final MethodHandle outputHandle;
         private final MethodHandle combineHandle;
         private final Optional<MethodHandle> stateSerializerFactoryHandle;
         private final List<AggregateNativeContainerType> argumentNativeContainerTypes;
         private final List<ImplementationDependency> inputDependencies;
+        private final List<ImplementationDependency> removeInputDependencies;
         private final List<ImplementationDependency> combineDependencies;
         private final List<ImplementationDependency> outputDependencies;
         private final List<ImplementationDependency> stateSerializerFactoryDependencies;
@@ -251,6 +290,7 @@ public class AggregationImplementation
                 AggregationHeader header,
                 Class<?> stateClass,
                 Method inputFunction,
+                Optional<Method> removeInputFunction,
                 Method outputFunction,
                 Method combineFunction,
                 Optional<Method> stateSerializerFactoryFunction)
@@ -267,6 +307,7 @@ public class AggregationImplementation
 
             // parse dependencies
             inputDependencies = parseImplementationDependencies(inputFunction);
+            removeInputDependencies = removeInputFunction.map(this::parseImplementationDependencies).orElse(ImmutableList.of());
             outputDependencies = parseImplementationDependencies(outputFunction);
             combineDependencies = parseImplementationDependencies(combineFunction);
             stateSerializerFactoryDependencies = stateSerializerFactoryFunction.map(this::parseImplementationDependencies).orElse(ImmutableList.of());
@@ -276,7 +317,12 @@ public class AggregationImplementation
 
             // parse constraints
             longVariableConstraints = FunctionsParserHelper.parseLongVariableConstraints(inputFunction);
-            List<ImplementationDependency> allDependencies = Stream.of(inputDependencies.stream(), outputDependencies.stream(), combineDependencies.stream())
+            List<ImplementationDependency> allDependencies =
+                    Stream.of(
+                            inputDependencies.stream(),
+                            removeInputDependencies.stream(),
+                            outputDependencies.stream(),
+                            combineDependencies.stream())
                     .reduce(Stream::concat)
                     .orElseGet(Stream::empty)
                     .collect(toImmutableList());
@@ -298,6 +344,7 @@ public class AggregationImplementation
             }
 
             inputHandle = methodHandle(inputFunction);
+            removeInputHandle = removeInputFunction.map(Reflection::methodHandle);
             combineHandle = methodHandle(combineFunction);
             outputHandle = methodHandle(outputFunction);
         }
@@ -306,7 +353,6 @@ public class AggregationImplementation
         {
             Signature signature = new Signature(
                     header.getName(),
-                    FunctionKind.AGGREGATE,
                     typeVariableConstraints,
                     longVariableConstraints,
                     returnType,
@@ -317,11 +363,13 @@ public class AggregationImplementation
                     aggregationDefinition,
                     stateClass,
                     inputHandle,
+                    removeInputHandle,
                     outputHandle,
                     combineHandle,
                     stateSerializerFactoryHandle,
                     argumentNativeContainerTypes,
                     inputDependencies,
+                    removeInputDependencies,
                     combineDependencies,
                     outputDependencies,
                     stateSerializerFactoryDependencies,
@@ -333,11 +381,12 @@ public class AggregationImplementation
                 AggregationHeader header,
                 Class<?> stateClass,
                 Method inputFunction,
+                Optional<Method> removeInputFunction,
                 Method outputFunction,
                 Method combineFunction,
                 Optional<Method> stateSerializerFactoryFunction)
         {
-            return new Parser(aggregationDefinition, header, stateClass, inputFunction, outputFunction, combineFunction, stateSerializerFactoryFunction).get();
+            return new Parser(aggregationDefinition, header, stateClass, inputFunction, removeInputFunction, outputFunction, combineFunction, stateSerializerFactoryFunction).get();
         }
 
         private static List<ParameterType> parseParameterMetadataTypes(Method method)
@@ -375,7 +424,7 @@ public class AggregationImplementation
                     builder.add(BLOCK_INDEX);
                 }
                 else {
-                    throw new IllegalArgumentException("Unsupported annotation: " + annotations[i]);
+                    throw new VerifyException("Unhandled annotation: " + baseTypeAnnotation);
                 }
             }
             return builder.build();

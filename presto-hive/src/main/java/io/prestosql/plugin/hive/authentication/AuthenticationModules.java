@@ -14,10 +14,10 @@
 package io.prestosql.plugin.hive.authentication;
 
 import com.google.inject.Binder;
-import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Singleton;
+import io.prestosql.plugin.base.authentication.KerberosAuthentication;
 import io.prestosql.plugin.hive.ForHdfs;
 import io.prestosql.plugin.hive.ForHiveMetastore;
 import io.prestosql.plugin.hive.HdfsConfigurationInitializer;
@@ -77,11 +77,8 @@ public final class AuthenticationModules
     public static Module simpleImpersonatingHdfsAuthenticationModule()
     {
         return binder -> {
-            binder.bind(Key.get(HadoopAuthentication.class, ForHdfs.class))
-                    .to(SimpleHadoopAuthentication.class);
-            binder.bind(HdfsAuthentication.class)
-                    .to(ImpersonatingHdfsAuthentication.class)
-                    .in(SINGLETON);
+            binder.bind(HadoopAuthentication.class).annotatedWith(ForHdfs.class).to(SimpleHadoopAuthentication.class);
+            binder.bind(HdfsAuthentication.class).to(ImpersonatingHdfsAuthentication.class).in(SINGLETON);
         };
     }
 

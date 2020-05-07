@@ -18,7 +18,6 @@ import io.prestosql.metadata.PolymorphicScalarFunction.PolymorphicScalarFunction
 import io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -30,6 +29,8 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.prestosql.metadata.FunctionKind.SCALAR;
+import static io.prestosql.metadata.Signature.mangleOperatorName;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.BLOCK_AND_POSITION;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
@@ -41,7 +42,9 @@ public final class PolymorphicScalarFunctionBuilder
 {
     private final Class<?> clazz;
     private Signature signature;
-    private String description;
+    private boolean nullableResult;
+    private List<FunctionArgumentDefinition> argumentDefinitions;
+    private String description = "";
     private Optional<Boolean> hidden = Optional.empty();
     private Boolean deterministic;
     private final List<PolymorphicScalarFunctionChoice> choices = new ArrayList<>();
@@ -55,6 +58,20 @@ public final class PolymorphicScalarFunctionBuilder
     {
         this.signature = requireNonNull(signature, "signature is null");
         this.hidden = Optional.of(hidden.orElse(isOperator(signature)));
+        return this;
+    }
+
+    public PolymorphicScalarFunctionBuilder nullableResult(boolean nullableResult)
+    {
+        this.nullableResult = nullableResult;
+        return this;
+    }
+
+    public PolymorphicScalarFunctionBuilder argumentDefinitions(FunctionArgumentDefinition... argumentDefinitions)
+    {
+        requireNonNull(argumentDefinitions, "argumentDefinitions is null");
+        checkState(this.argumentDefinitions == null, "The argumentDefinitions method must be invoked only once, and must be invoked before the choice method");
+        this.argumentDefinitions = ImmutableList.copyOf(argumentDefinitions);
         return this;
     }
 
@@ -78,6 +95,10 @@ public final class PolymorphicScalarFunctionBuilder
 
     public PolymorphicScalarFunctionBuilder choice(Function<ChoiceBuilder, ChoiceBuilder> choiceSpecification)
     {
+        // if the argumentProperties is not set yet. We assume it is set to the default value.
+        if (argumentDefinitions == null) {
+            argumentDefinitions = nCopies(signature.getArgumentTypes().size(), new FunctionArgumentDefinition(false));
+        }
         ChoiceBuilder choiceBuilder = new ChoiceBuilder(clazz, signature);
         choiceSpecification.apply(choiceBuilder);
         choices.add(choiceBuilder.build());
@@ -90,10 +111,14 @@ public final class PolymorphicScalarFunctionBuilder
         checkState(deterministic != null, "deterministic is null");
 
         return new PolymorphicScalarFunction(
-                signature,
-                description,
-                hidden.orElse(false),
-                deterministic,
+                new FunctionMetadata(
+                        signature,
+                        nullableResult,
+                        argumentDefinitions,
+                        hidden.orElse(false),
+                        deterministic,
+                        description,
+                        SCALAR),
                 choices);
     }
 
@@ -117,7 +142,7 @@ public final class PolymorphicScalarFunctionBuilder
     private static boolean isOperator(Signature signature)
     {
         for (OperatorType operator : OperatorType.values()) {
-            if (signature.getName().equals(FunctionRegistry.mangleOperatorName(operator))) {
+            if (signature.getName().equals(mangleOperatorName(operator))) {
                 return true;
             }
         }
@@ -130,16 +155,12 @@ public final class PolymorphicScalarFunctionBuilder
         private final BoundVariables boundVariables;
         private final List<Type> parameterTypes;
         private final Type returnType;
-        private final TypeManager typeManager;
-        private final FunctionRegistry functionRegistry;
 
-        SpecializeContext(BoundVariables boundVariables, List<Type> parameterTypes, Type returnType, TypeManager typeManager, FunctionRegistry functionRegistry)
+        SpecializeContext(BoundVariables boundVariables, List<Type> parameterTypes, Type returnType)
         {
             this.boundVariables = requireNonNull(boundVariables, "boundVariables is null");
             this.parameterTypes = requireNonNull(parameterTypes, "parameterTypes is null");
-            this.typeManager = requireNonNull(typeManager, "typeManager is null");
             this.returnType = requireNonNull(returnType, "returnType is null");
-            this.functionRegistry = requireNonNull(functionRegistry, "functionRegistry is null");
         }
 
         public Type getType(String name)
@@ -160,16 +181,6 @@ public final class PolymorphicScalarFunctionBuilder
         public Type getReturnType()
         {
             return returnType;
-        }
-
-        public TypeManager getTypeManager()
-        {
-            return typeManager;
-        }
-
-        public FunctionRegistry getFunctionRegistry()
-        {
-            return functionRegistry;
         }
     }
 

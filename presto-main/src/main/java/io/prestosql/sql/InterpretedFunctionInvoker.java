@@ -14,8 +14,8 @@
 package io.prestosql.sql;
 
 import com.google.common.base.Defaults;
-import io.prestosql.metadata.FunctionRegistry;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.operator.scalar.ScalarFunctionImplementation;
 import io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
 import io.prestosql.spi.connector.ConnectorSession;
@@ -33,14 +33,14 @@ import static java.util.Objects.requireNonNull;
 
 public class InterpretedFunctionInvoker
 {
-    private final FunctionRegistry registry;
+    private final Metadata metadata;
 
-    public InterpretedFunctionInvoker(FunctionRegistry registry)
+    public InterpretedFunctionInvoker(Metadata metadata)
     {
-        this.registry = requireNonNull(registry, "registry is null");
+        this.metadata = requireNonNull(metadata, "metadata is null");
     }
 
-    public Object invoke(Signature function, ConnectorSession session, Object... arguments)
+    public Object invoke(ResolvedFunction function, ConnectorSession session, Object... arguments)
     {
         return invoke(function, session, Arrays.asList(arguments));
     }
@@ -50,9 +50,9 @@ public class InterpretedFunctionInvoker
      * <p>
      * Returns a value in the native container type corresponding to the declared SQL return type
      */
-    public Object invoke(Signature function, ConnectorSession session, List<Object> arguments)
+    public Object invoke(ResolvedFunction function, ConnectorSession session, List<Object> arguments)
     {
-        ScalarFunctionImplementation implementation = registry.getScalarFunctionImplementation(function);
+        ScalarFunctionImplementation implementation = metadata.getScalarFunctionImplementation(function);
         MethodHandle method = implementation.getMethodHandle();
 
         // handle function on instance method, to allow use of fields

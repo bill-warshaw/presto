@@ -182,7 +182,17 @@ public final class WorkProcessorUtils
         }
     }
 
-    static <T> WorkProcessor<T> processStateMonitor(WorkProcessor<T> processor, Consumer<ProcessState<? extends T>> monitor)
+    static <T> WorkProcessor<T> processEntryMonitor(WorkProcessor<T> processor, Runnable monitor)
+    {
+        requireNonNull(processor, "processor is null");
+        requireNonNull(monitor, "monitor is null");
+        return WorkProcessor.create(() -> {
+            monitor.run();
+            return getNextState(processor);
+        });
+    }
+
+    static <T> WorkProcessor<T> processStateMonitor(WorkProcessor<T> processor, Consumer<ProcessState<T>> monitor)
     {
         requireNonNull(processor, "processor is null");
         requireNonNull(monitor, "monitor is null");
@@ -190,6 +200,19 @@ public final class WorkProcessorUtils
             ProcessState<T> state = getNextState(processor);
             monitor.accept(state);
             return state;
+        });
+    }
+
+    static <T> WorkProcessor<T> finishWhen(WorkProcessor<T> processor, BooleanSupplier finishSignal)
+    {
+        requireNonNull(processor, "processor is null");
+        requireNonNull(finishSignal, "finishSignal is null");
+        return WorkProcessor.create(() -> {
+            if (finishSignal.getAsBoolean()) {
+                return ProcessState.finished();
+            }
+
+            return getNextState(processor);
         });
     }
 
@@ -214,8 +237,7 @@ public final class WorkProcessorUtils
     {
         requireNonNull(processor, "processor is null");
         requireNonNull(mapper, "mapper is null");
-        return processor.flatTransform(element ->
-        {
+        return processor.flatTransform(element -> {
             if (element == null) {
                 return TransformationState.finished();
             }
@@ -351,9 +373,10 @@ public final class WorkProcessorUtils
 
             if (state.getType() == ProcessState.Type.FINISHED) {
                 process = null;
+                return true;
             }
 
-            return state.getType() == ProcessState.Type.RESULT || state.getType() == ProcessState.Type.FINISHED;
+            return state.getType() == ProcessState.Type.RESULT;
         }
 
         @Override

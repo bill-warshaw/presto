@@ -15,7 +15,7 @@ package io.prestosql.sql.tree;
 
 public class ExpressionRewriter<C>
 {
-    public Expression rewriteExpression(Expression node, C context, ExpressionTreeRewriter<C> treeRewriter)
+    protected Expression rewriteExpression(Expression node, C context, ExpressionTreeRewriter<C> treeRewriter)
     {
         return null;
     }
@@ -191,6 +191,11 @@ public class ExpressionRewriter<C>
     }
 
     public Expression rewriteCurrentPath(CurrentPath node, C context, ExpressionTreeRewriter<C> treeRewriter)
+    {
+        return rewriteExpression(node, context, treeRewriter);
+    }
+
+    public Expression rewriteFormat(Format node, C context, ExpressionTreeRewriter<C> treeRewriter)
     {
         return rewriteExpression(node, context, treeRewriter);
     }

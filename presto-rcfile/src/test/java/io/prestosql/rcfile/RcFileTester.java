@@ -24,9 +24,8 @@ import io.airlift.slice.OutputStreamSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
-import io.prestosql.block.BlockEncodingManager;
 import io.prestosql.hadoop.HadoopNative;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.rcfile.binary.BinaryRcFileEncoding;
 import io.prestosql.rcfile.text.TextRcFileEncoding;
 import io.prestosql.spi.Page;
@@ -42,11 +41,8 @@ import io.prestosql.spi.type.SqlDecimal;
 import io.prestosql.spi.type.SqlTimestamp;
 import io.prestosql.spi.type.SqlVarbinary;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import io.prestosql.spi.type.VarcharType;
-import io.prestosql.sql.analyzer.FeaturesConfig;
-import io.prestosql.type.TypeRegistry;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
@@ -129,9 +125,9 @@ import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.rcfile.RcFileDecoderUtils.findFirstSyncPosition;
 import static io.prestosql.rcfile.RcFileTester.Compression.BZIP2;
 import static io.prestosql.rcfile.RcFileTester.Compression.LZ4;
@@ -148,9 +144,7 @@ import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.IntegerType.INTEGER;
 import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.SmallintType.SMALLINT;
-import static io.prestosql.spi.type.StandardTypes.ARRAY;
 import static io.prestosql.spi.type.StandardTypes.MAP;
-import static io.prestosql.spi.type.StandardTypes.ROW;
 import static io.prestosql.spi.type.TimeZoneKey.UTC_KEY;
 import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
@@ -188,15 +182,11 @@ import static org.testng.Assert.assertTrue;
 @SuppressWarnings("StaticPseudoFunctionalStyleMethod")
 public class RcFileTester
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
-
     static {
-        // associate TYPE_MANAGER with a function registry
-        new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
-
         HadoopNative.requireHadoopNative();
     }
 
+    private static final Metadata METADATA = createTestMetadataManager();
     public static final DateTimeZone HIVE_STORAGE_TIME_ZONE = DateTimeZone.forID("America/Bahia_Banderas");
 
     public enum Format
@@ -469,7 +459,7 @@ public class RcFileTester
 
             Iterator<?> iterator = expectedValues.iterator();
             int totalCount = 0;
-            for (int batchSize = recordReader.advance(); batchSize >= 0; batchSize = toIntExact(recordReader.advance())) {
+            for (int batchSize = recordReader.advance(); batchSize >= 0; batchSize = recordReader.advance()) {
                 totalCount += batchSize;
                 if (readLastBatchOnly && totalCount == expectedValues.size()) {
                     assertEquals(advance(iterator, batchSize), batchSize);
@@ -502,8 +492,7 @@ public class RcFileTester
             assertNull(expected);
             return;
         }
-        String baseType = type.getTypeSignature().getBase();
-        if (ARRAY.equals(baseType)) {
+        if (type instanceof ArrayType) {
             List<?> actualArray = (List<?>) actual;
             List<?> expectedArray = (List<?>) expected;
             assertEquals(actualArray.size(), expectedArray.size());
@@ -515,7 +504,7 @@ public class RcFileTester
                 assertColumnValueEquals(elementType, actualElement, expectedElement);
             }
         }
-        else if (MAP.equals(baseType)) {
+        else if (type instanceof MapType) {
             Map<?, ?> actualMap = (Map<?, ?>) actual;
             Map<?, ?> expectedMap = (Map<?, ?>) expected;
             assertEquals(actualMap.size(), expectedMap.size());
@@ -539,7 +528,7 @@ public class RcFileTester
             }
             assertTrue(expectedEntries.isEmpty(), "Unmatched entries " + expectedEntries);
         }
-        else if (ROW.equals(baseType)) {
+        else if (type instanceof RowType) {
             List<Type> fieldTypes = type.getTypeParameters();
 
             List<?> actualRow = (List<?>) actual;
@@ -643,7 +632,7 @@ public class RcFileTester
                 new AircompressorCodecFactory(new HadoopCodecFactory(RcFileTester.class.getClassLoader())),
                 0,
                 tempFile.getFile().length(),
-                new DataSize(8, MEGABYTE));
+                DataSize.of(8, MEGABYTE));
 
         assertEquals(rcFileReader.getColumnCount(), 1);
 
@@ -662,8 +651,8 @@ public class RcFileTester
                 compression.getCodecName(),
                 codecFactory,
                 metadata,
-                new DataSize(100, KILOBYTE),   // use a smaller size to create more row groups
-                new DataSize(200, KILOBYTE),
+                DataSize.of(100, KILOBYTE),   // use a smaller size to create more row groups
+                DataSize.of(200, KILOBYTE),
                 true);
         BlockBuilder blockBuilder = type.createBlockBuilder(null, 1024);
         while (values.hasNext()) {
@@ -676,7 +665,7 @@ public class RcFileTester
 
         writer.validate(new FileRcFileDataSource(outputFile));
 
-        return new DataSize(output.size(), BYTE);
+        return DataSize.ofBytes(output.size());
     }
 
     private static void writeValue(Type type, BlockBuilder blockBuilder, Object value)
@@ -727,8 +716,7 @@ public class RcFileTester
                 type.writeLong(blockBuilder, millis);
             }
             else {
-                String baseType = type.getTypeSignature().getBase();
-                if (ARRAY.equals(baseType)) {
+                if (type instanceof ArrayType) {
                     List<?> array = (List<?>) value;
                     Type elementType = type.getTypeParameters().get(0);
                     BlockBuilder arrayBlockBuilder = blockBuilder.beginBlockEntry();
@@ -737,7 +725,7 @@ public class RcFileTester
                     }
                     blockBuilder.closeEntry();
                 }
-                else if (MAP.equals(baseType)) {
+                else if (type instanceof MapType) {
                     Map<?, ?> map = (Map<?, ?>) value;
                     Type keyType = type.getTypeParameters().get(0);
                     Type valueType = type.getTypeParameters().get(1);
@@ -748,7 +736,7 @@ public class RcFileTester
                     }
                     blockBuilder.closeEntry();
                 }
-                else if (ROW.equals(baseType)) {
+                else if (type instanceof RowType) {
                     List<?> array = (List<?>) value;
                     List<Type> fieldTypes = type.getTypeParameters();
                     BlockBuilder rowBlockBuilder = blockBuilder.beginBlockEntry();
@@ -945,7 +933,7 @@ public class RcFileTester
         }
 
         recordWriter.close(false);
-        return new DataSize(outputFile.length(), BYTE).convertToMostSuccinctDataSize();
+        return DataSize.ofBytes(outputFile.length()).succinct();
     }
 
     private static ObjectInspector getJavaObjectInspector(Type type)
@@ -987,15 +975,15 @@ public class RcFileTester
             DecimalType decimalType = (DecimalType) type;
             return getPrimitiveJavaObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
         }
-        if (type.getTypeSignature().getBase().equals(ARRAY)) {
+        if (type instanceof ArrayType) {
             return ObjectInspectorFactory.getStandardListObjectInspector(getJavaObjectInspector(type.getTypeParameters().get(0)));
         }
-        if (type.getTypeSignature().getBase().equals(MAP)) {
+        if (type instanceof MapType) {
             ObjectInspector keyObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(0));
             ObjectInspector valueObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(1));
             return ObjectInspectorFactory.getStandardMapObjectInspector(keyObjectInspector, valueObjectInspector);
         }
-        if (type.getTypeSignature().getBase().equals(ROW)) {
+        if (type instanceof RowType) {
             return getStandardStructObjectInspector(
                     type.getTypeSignature().getParameters().stream()
                             .map(parameter -> parameter.getNamedTypeSignature().getName().get())
@@ -1058,13 +1046,13 @@ public class RcFileTester
         if (type instanceof DecimalType) {
             return HiveDecimal.create(((SqlDecimal) value).toBigDecimal());
         }
-        if (type.getTypeSignature().getBase().equals(ARRAY)) {
+        if (type instanceof ArrayType) {
             Type elementType = type.getTypeParameters().get(0);
             return ((List<?>) value).stream()
                     .map(element -> preprocessWriteValueOld(elementType, element))
                     .collect(toList());
         }
-        if (type.getTypeSignature().getBase().equals(MAP)) {
+        if (type instanceof MapType) {
             Type keyType = type.getTypeParameters().get(0);
             Type valueType = type.getTypeParameters().get(1);
             Map<Object, Object> newMap = new HashMap<>();
@@ -1073,7 +1061,7 @@ public class RcFileTester
             }
             return newMap;
         }
-        if (type.getTypeSignature().getBase().equals(ROW)) {
+        if (type instanceof RowType) {
             List<?> fieldValues = (List<?>) value;
             List<Type> fieldTypes = type.getTypeParameters();
             List<Object> newStruct = new ArrayList<>();
@@ -1185,9 +1173,9 @@ public class RcFileTester
 
     private static MapType createMapType(Type type)
     {
-        return (MapType) TYPE_MANAGER.getParameterizedType(MAP, ImmutableList.of(
-                TypeSignatureParameter.of(type.getTypeSignature()),
-                TypeSignatureParameter.of(type.getTypeSignature())));
+        return (MapType) METADATA.getParameterizedType(MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(type.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(type.getTypeSignature())));
     }
 
     private static Object toHiveMap(Object nullKeyValue, Object input)

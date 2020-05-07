@@ -35,7 +35,6 @@ import io.prestosql.sql.planner.DomainTranslator;
 import io.prestosql.sql.planner.ExpressionInterpreter;
 import io.prestosql.sql.planner.NoOpSymbolResolver;
 import io.prestosql.sql.planner.OrderingScheme;
-import io.prestosql.sql.planner.Partitioning;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.TypeProvider;
@@ -43,6 +42,7 @@ import io.prestosql.sql.planner.optimizations.ActualProperties.Global;
 import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
@@ -53,7 +53,6 @@ import io.prestosql.sql.planner.plan.GroupIdNode;
 import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OutputNode;
@@ -66,6 +65,7 @@ import io.prestosql.sql.planner.plan.SemiJoinNode;
 import io.prestosql.sql.planner.plan.SortNode;
 import io.prestosql.sql.planner.plan.SpatialJoinNode;
 import io.prestosql.sql.planner.plan.StatisticsWriterNode;
+import io.prestosql.sql.planner.plan.TableDeleteNode;
 import io.prestosql.sql.planner.plan.TableFinishNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.TableWriterNode;
@@ -105,7 +105,7 @@ import static io.prestosql.sql.planner.plan.ExchangeNode.Scope.REMOTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
 
-public class PropertyDerivations
+public final class PropertyDerivations
 {
     private PropertyDerivations() {}
 
@@ -213,7 +213,7 @@ public class PropertyDerivations
         }
 
         @Override
-        public ActualProperties visitLateralJoin(LateralJoinNode node, List<ActualProperties> inputProperties)
+        public ActualProperties visitCorrelatedJoin(CorrelatedJoinNode node, List<ActualProperties> inputProperties)
         {
             throw new IllegalArgumentException("Unexpected node: " + node.getClass().getName());
         }
@@ -381,6 +381,14 @@ public class PropertyDerivations
         }
 
         @Override
+        public ActualProperties visitTableDelete(TableDeleteNode node, List<ActualProperties> context)
+        {
+            return ActualProperties.builder()
+                    .global(coordinatorSingleStreamPartition())
+                    .build();
+        }
+
+        @Override
         public ActualProperties visitDelete(DeleteNode node, List<ActualProperties> inputProperties)
         {
             // drop all symbols in property because delete doesn't pass on any of the columns
@@ -430,21 +438,8 @@ public class PropertyDerivations
                             .unordered(true)
                             .build();
                 case FULL:
-                    if (probeProperties.getNodePartitioning().isPresent()) {
-                        Partitioning nodePartitioning = probeProperties.getNodePartitioning().get();
-                        ImmutableList.Builder<Expression> coalesceExpressions = ImmutableList.builder();
-                        for (Symbol column : nodePartitioning.getColumns()) {
-                            for (JoinNode.EquiJoinClause equality : node.getCriteria()) {
-                                if (equality.getLeft().equals(column) || equality.getRight().equals(column)) {
-                                    coalesceExpressions.add(new CoalesceExpression(ImmutableList.of(equality.getLeft().toSymbolReference(), equality.getRight().toSymbolReference())));
-                                }
-                            }
-                        }
-
-                        return ActualProperties.builder()
-                                .global(partitionedOn(Partitioning.createWithExpressions(nodePartitioning.getHandle(), coalesceExpressions.build()), Optional.empty()))
-                                .build();
-                    }
+                    // We can't say anything about the partitioning scheme because any partition of
+                    // a hash-partitioned join can produce nulls in case of a lack of matches
                     return ActualProperties.builder()
                             .global(probeProperties.isSingleNode() ? singleStreamPartition() : arbitraryPartition())
                             .build();
@@ -687,12 +682,25 @@ public class PropertyDerivations
         {
             Set<Symbol> passThroughInputs = ImmutableSet.copyOf(node.getReplicateSymbols());
 
-            return Iterables.getOnlyElement(inputProperties).translate(column -> {
+            ActualProperties translatedProperties = Iterables.getOnlyElement(inputProperties).translate(column -> {
                 if (passThroughInputs.contains(column)) {
                     return Optional.of(column);
                 }
                 return Optional.empty();
             });
+
+            switch (node.getJoinType()) {
+                case INNER:
+                case LEFT:
+                    return translatedProperties;
+                case RIGHT:
+                case FULL:
+                    return ActualProperties.builderFrom(translatedProperties)
+                            .local(ImmutableList.of())
+                            .build();
+                default:
+                    throw new UnsupportedOperationException("Unknown UNNEST join type: " + node.getJoinType());
+            }
         }
 
         @Override

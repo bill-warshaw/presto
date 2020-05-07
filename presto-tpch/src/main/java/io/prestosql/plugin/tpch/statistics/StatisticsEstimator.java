@@ -14,8 +14,8 @@
 package io.prestosql.plugin.tpch.statistics;
 
 import io.airlift.slice.Slice;
-import io.airlift.tpch.TpchColumn;
-import io.airlift.tpch.TpchTable;
+import io.prestosql.tpch.TpchColumn;
+import io.prestosql.tpch.TpchTable;
 
 import java.util.List;
 import java.util.Map;
@@ -98,8 +98,8 @@ public class StatisticsEstimator
     private Object min(Object l, Object r)
     {
         checkSameType(l, r);
-        Comparable left = checkType(l, Comparable.class);
-        Comparable right = checkType(r, Comparable.class);
+        Comparable<Object> left = checkType(l, Comparable.class);
+        Comparable<Object> right = checkType(r, Comparable.class);
         return left.compareTo(right) < 0 ? left : right;
     }
 
@@ -107,8 +107,8 @@ public class StatisticsEstimator
     private Object max(Object l, Object r)
     {
         checkSameType(l, r);
-        Comparable left = checkType(l, Comparable.class);
-        Comparable right = checkType(r, Comparable.class);
+        Comparable<Object> left = checkType(l, Comparable.class);
+        Comparable<Object> right = checkType(r, Comparable.class);
         return left.compareTo(right) > 0 ? left : right;
     }
 

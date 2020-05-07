@@ -23,15 +23,12 @@ import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.FixedWidthType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
-import io.prestosql.spi.type.TypeSignature;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfUnchecked;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 
@@ -68,21 +65,19 @@ public final class TypeUtils
             if (type.getJavaType() == boolean.class) {
                 return (long) methodHandle.invoke(type.getBoolean(block, position));
             }
-            else if (type.getJavaType() == long.class) {
+            if (type.getJavaType() == long.class) {
                 return (long) methodHandle.invoke(type.getLong(block, position));
             }
-            else if (type.getJavaType() == double.class) {
+            if (type.getJavaType() == double.class) {
                 return (long) methodHandle.invoke(type.getDouble(block, position));
             }
-            else if (type.getJavaType() == Slice.class) {
+            if (type.getJavaType() == Slice.class) {
                 return (long) methodHandle.invoke(type.getSlice(block, position));
             }
-            else if (!type.getJavaType().isPrimitive()) {
+            if (!type.getJavaType().isPrimitive()) {
                 return (long) methodHandle.invoke(type.getObject(block, position));
             }
-            else {
-                throw new UnsupportedOperationException("Unsupported native container type: " + type.getJavaType() + " with type " + type.getTypeSignature());
-            }
+            throw new UnsupportedOperationException("Unsupported native container type: " + type.getJavaType() + " with type " + type.getTypeSignature());
         }
         catch (Throwable throwable) {
             throwIfUnchecked(throwable);
@@ -98,18 +93,6 @@ public final class TypeUtils
             return leftIsNull && rightIsNull;
         }
         return type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition);
-    }
-
-    public static Type resolveType(TypeSignature typeName, TypeManager typeManager)
-    {
-        return typeManager.getType(typeName);
-    }
-
-    public static List<Type> resolveTypes(List<TypeSignature> typeNames, TypeManager typeManager)
-    {
-        return typeNames.stream()
-                .map((TypeSignature type) -> resolveType(type, typeManager))
-                .collect(toImmutableList());
     }
 
     public static long getHashPosition(List<? extends Type> hashTypes, Block[] hashBlocks, int position)

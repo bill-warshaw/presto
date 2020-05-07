@@ -97,7 +97,7 @@ public class TestHivePartitionsTable
                 .build();
     }
 
-    @Test(groups = {HIVE_PARTITIONING})
+    @Test(groups = HIVE_PARTITIONING)
     public void testShowPartitionsFromHiveTable()
     {
         String tableNameInDatabase = tablesState.get(PARTITIONED_TABLE).getNameInDatabase();
@@ -119,14 +119,14 @@ public class TestHivePartitionsTable
                 .failsWithMessage("Column 'col' cannot be resolved");
     }
 
-    @Test(groups = {HIVE_PARTITIONING})
+    @Test(groups = HIVE_PARTITIONING)
     public void testShowPartitionsFromUnpartitionedTable()
     {
         assertThat(() -> query("SELECT * FROM \"nation$partitions\""))
-                .failsWithMessageMatching(".*Table hive.default.nation\\$partitions does not exist");
+                .failsWithMessageMatching(".*Table 'hive.default.nation\\$partitions' does not exist");
     }
 
-    @Test(groups = {HIVE_PARTITIONING})
+    @Test(groups = HIVE_PARTITIONING)
     public void testShowPartitionsFromHiveTableWithTooManyPartitions()
     {
         String tableName = tablesState.get(PARTITIONED_TABLE_WITH_VARIABLE_PARTITIONS).getNameInDatabase();
@@ -142,6 +142,9 @@ public class TestHivePartitionsTable
         partitionListResult = query(format("SELECT * FROM %s WHERE part_col < 7", partitionsTable));
         assertThat(partitionListResult).containsExactly(row(0), row(1), row(2), row(3), row(4), row(5), row(6));
         assertColumnNames(partitionListResult, "part_col");
+
+        partitionListResult = query(format("SELECT a.part_col FROM (SELECT * FROM %s WHERE part_col = 1) a, (SELECT * FROM %s WHERE part_col = 1) b WHERE a.col = b.col", tableName, tableName));
+        assertThat(partitionListResult).containsExactly(row(1));
 
         partitionListResult = query(format("SELECT * FROM %s WHERE part_col < -10", partitionsTable));
         assertThat(partitionListResult).hasNoRows();

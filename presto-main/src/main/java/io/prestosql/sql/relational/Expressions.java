@@ -14,7 +14,7 @@
 package io.prestosql.sql.relational;
 
 import com.google.common.collect.ImmutableList;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.type.Type;
 
 import java.util.Arrays;
@@ -22,9 +22,7 @@ import java.util.List;
 
 public final class Expressions
 {
-    private Expressions()
-    {
-    }
+    private Expressions() {}
 
     public static ConstantExpression constant(Object value, Type type)
     {
@@ -36,14 +34,14 @@ public final class Expressions
         return new ConstantExpression(null, type);
     }
 
-    public static CallExpression call(Signature signature, Type returnType, RowExpression... arguments)
+    public static CallExpression call(ResolvedFunction resolvedFunction, Type returnType, RowExpression... arguments)
     {
-        return new CallExpression(signature, returnType, Arrays.asList(arguments));
+        return new CallExpression(resolvedFunction, returnType, Arrays.asList(arguments));
     }
 
-    public static CallExpression call(Signature signature, Type returnType, List<RowExpression> arguments)
+    public static CallExpression call(ResolvedFunction resolvedFunction, Type returnType, List<RowExpression> arguments)
     {
-        return new CallExpression(signature, returnType, arguments);
+        return new CallExpression(resolvedFunction, returnType, arguments);
     }
 
     public static InputReferenceExpression field(int field, Type type)
@@ -63,6 +61,16 @@ public final class Expressions
                 {
                     builder.add(call);
                     for (RowExpression argument : call.getArguments()) {
+                        argument.accept(this, context);
+                    }
+                    return null;
+                }
+
+                @Override
+                public Void visitSpecialForm(SpecialForm specialForm, Void context)
+                {
+                    builder.add(specialForm);
+                    for (RowExpression argument : specialForm.getArguments()) {
                         argument.accept(this, context);
                     }
                     return null;

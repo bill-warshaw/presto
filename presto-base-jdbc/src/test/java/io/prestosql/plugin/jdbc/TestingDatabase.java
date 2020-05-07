@@ -13,18 +13,18 @@
  */
 package io.prestosql.plugin.jdbc;
 
+import io.prestosql.plugin.jdbc.credential.EmptyCredentialProvider;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorSplitSource;
 import io.prestosql.spi.connector.SchemaTableName;
-import io.prestosql.spi.predicate.TupleDomain;
 import org.h2.Driver;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Iterables.getOnlyElement;
@@ -41,11 +41,11 @@ final class TestingDatabase
     public TestingDatabase()
             throws SQLException
     {
-        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime();
+        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime() + ThreadLocalRandom.current().nextLong();
         jdbcClient = new BaseJdbcClient(
                 new BaseJdbcConfig(),
                 "\"",
-                new DriverConnectionFactory(new Driver(), connectionUrl, Optional.empty(), Optional.empty(), new Properties()));
+                new DriverConnectionFactory(new Driver(), connectionUrl, new Properties(), new EmptyCredentialProvider()));
 
         connection = DriverManager.getConnection(connectionUrl);
         connection.createStatement().execute("CREATE SCHEMA example");
@@ -97,8 +97,7 @@ final class TestingDatabase
 
     public JdbcSplit getSplit(ConnectorSession session, JdbcTableHandle table)
     {
-        JdbcTableLayoutHandle jdbcLayoutHandle = new JdbcTableLayoutHandle(table, TupleDomain.all());
-        ConnectorSplitSource splits = jdbcClient.getSplits(JdbcIdentity.from(session), jdbcLayoutHandle);
+        ConnectorSplitSource splits = jdbcClient.getSplits(session, table);
         return (JdbcSplit) getOnlyElement(getFutureValue(splits.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
     }
 

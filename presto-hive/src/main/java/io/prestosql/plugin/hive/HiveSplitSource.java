@@ -23,13 +23,12 @@ import io.airlift.units.DataSize;
 import io.prestosql.plugin.hive.InternalHiveSplit.InternalHiveBlock;
 import io.prestosql.plugin.hive.util.AsyncQueue;
 import io.prestosql.plugin.hive.util.AsyncQueue.BorrowResult;
+import io.prestosql.plugin.hive.util.ThrottledAsyncQueue;
 import io.prestosql.spi.PrestoException;
-import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorPartitionHandle;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorSplit;
 import io.prestosql.spi.connector.ConnectorSplitSource;
-import io.prestosql.spi.predicate.TupleDomain;
 
 import java.io.FileNotFoundException;
 import java.util.List;
@@ -47,7 +46,6 @@ import java.util.function.Predicate;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.Maps.transformValues;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.failedFuture;
@@ -64,22 +62,20 @@ import static io.prestosql.plugin.hive.HiveSplitSource.StateKind.INITIAL;
 import static io.prestosql.plugin.hive.HiveSplitSource.StateKind.NO_MORE_SPLITS;
 import static io.prestosql.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static java.lang.Math.min;
-import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 class HiveSplitSource
         implements ConnectorSplitSource
 {
-    private static final Logger log = Logger.get(HiveSplit.class);
+    private static final Logger log = Logger.get(HiveSplitSource.class);
 
     private final String queryId;
     private final String databaseName;
     private final String tableName;
-    private final TupleDomain<? extends ColumnHandle> compactEffectivePredicate;
     private final PerBucket queues;
     private final AtomicInteger bufferedInternalSplitCount = new AtomicInteger();
-    private final int maxOutstandingSplitsBytes;
+    private final long maxOutstandingSplitsBytes;
 
     private final DataSize maxSplitSize;
     private final DataSize maxInitialSplitSize;
@@ -97,7 +93,6 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
-            TupleDomain<? extends ColumnHandle> compactEffectivePredicate,
             PerBucket queues,
             int maxInitialSplits,
             DataSize maxOutstandingSplitsSize,
@@ -109,9 +104,8 @@ class HiveSplitSource
         this.queryId = session.getQueryId();
         this.databaseName = requireNonNull(databaseName, "databaseName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
-        this.compactEffectivePredicate = requireNonNull(compactEffectivePredicate, "compactEffectivePredicate is null");
         this.queues = requireNonNull(queues, "queues is null");
-        this.maxOutstandingSplitsBytes = toIntExact(maxOutstandingSplitsSize.toBytes());
+        this.maxOutstandingSplitsBytes = requireNonNull(maxOutstandingSplitsSize, "maxOutstandingSplitsSize is null").toBytes();
         this.splitLoader = requireNonNull(splitLoader, "splitLoader is null");
         this.stateReference = requireNonNull(stateReference, "stateReference is null");
         this.highMemorySplitSourceCounter = requireNonNull(highMemorySplitSourceCounter, "highMemorySplitSourceCounter is null");
@@ -125,10 +119,10 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
-            TupleDomain<? extends ColumnHandle> compactEffectivePredicate,
             int maxInitialSplits,
             int maxOutstandingSplits,
             DataSize maxOutstandingSplitsSize,
+            int maxSplitsPerSecond,
             HiveSplitLoader splitLoader,
             Executor executor,
             CounterStat highMemorySplitSourceCounter)
@@ -138,10 +132,9 @@ class HiveSplitSource
                 session,
                 databaseName,
                 tableName,
-                compactEffectivePredicate,
                 new PerBucket()
                 {
-                    private final AsyncQueue<InternalHiveSplit> queue = new AsyncQueue<>(maxOutstandingSplits, executor);
+                    private final AsyncQueue<InternalHiveSplit> queue = new ThrottledAsyncQueue<>(maxSplitsPerSecond, maxOutstandingSplits, executor);
 
                     @Override
                     public ListenableFuture<?> offer(OptionalInt bucketNumber, InternalHiveSplit connectorSplit)
@@ -181,10 +174,10 @@ class HiveSplitSource
             ConnectorSession session,
             String databaseName,
             String tableName,
-            TupleDomain<? extends ColumnHandle> compactEffectivePredicate,
             int estimatedOutstandingSplitsPerBucket,
             int maxInitialSplits,
             DataSize maxOutstandingSplitsSize,
+            int maxSplitsPerSecond,
             HiveSplitLoader splitLoader,
             Executor executor,
             CounterStat highMemorySplitSourceCounter)
@@ -194,7 +187,6 @@ class HiveSplitSource
                 session,
                 databaseName,
                 tableName,
-                compactEffectivePredicate,
                 new PerBucket()
                 {
                     private final Map<Integer, AsyncQueue<InternalHiveSplit>> queues = new ConcurrentHashMap<>();
@@ -236,7 +228,7 @@ class HiveSplitSource
                         AtomicBoolean isNew = new AtomicBoolean();
                         AsyncQueue<InternalHiveSplit> queue = queues.computeIfAbsent(bucketNumber.getAsInt(), ignored -> {
                             isNew.set(true);
-                            return new AsyncQueue<>(estimatedOutstandingSplitsPerBucket, executor);
+                            return new ThrottledAsyncQueue<>(maxSplitsPerSecond, estimatedOutstandingSplitsPerBucket, executor);
                         });
                         if (isNew.get() && finished.get()) {
                             // Check `finished` and invoke `queue.finish` after the `queue` is added to the map.
@@ -369,15 +361,16 @@ class HiveSplitSource
                         internalSplit.getStart(),
                         splitBytes,
                         internalSplit.getFileSize(),
+                        internalSplit.getFileModifiedTime(),
                         internalSplit.getSchema(),
                         internalSplit.getPartitionKeys(),
                         block.getAddresses(),
                         internalSplit.getBucketNumber(),
                         internalSplit.isForceLocalScheduling(),
-                        (TupleDomain<HiveColumnHandle>) compactEffectivePredicate,
-                        transformValues(internalSplit.getColumnCoercions(), HiveTypeName::toHiveType),
+                        internalSplit.getTableToPartitionMapping(),
                         internalSplit.getBucketConversion(),
-                        internalSplit.isS3SelectPushdownEnabled()));
+                        internalSplit.isS3SelectPushdownEnabled(),
+                        internalSplit.getDeleteDeltaLocations()));
 
                 internalSplit.increaseStart(splitBytes);
 

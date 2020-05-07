@@ -21,8 +21,6 @@ import com.google.common.primitives.Ints;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.prestosql.operator.scalar.AbstractTestFunctions;
-import io.prestosql.spi.ErrorCode;
-import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.function.LiteralParameters;
@@ -35,8 +33,6 @@ import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.SqlDate;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.sql.analyzer.SemanticErrorCode;
-import io.prestosql.sql.analyzer.SemanticException;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -51,10 +47,13 @@ import java.util.concurrent.TimeUnit;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.block.BlockSerdeUtil.writeBlock;
 import static io.prestosql.operator.aggregation.TypedSet.MAX_FUNCTION_MEMORY;
+import static io.prestosql.spi.StandardErrorCode.AMBIGUOUS_FUNCTION_CALL;
 import static io.prestosql.spi.StandardErrorCode.EXCEEDED_FUNCTION_MEMORY_LIMIT;
+import static io.prestosql.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.prestosql.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.prestosql.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.prestosql.spi.function.OperatorType.HASH_CODE;
 import static io.prestosql.spi.function.OperatorType.INDETERMINATE;
 import static io.prestosql.spi.type.BigintType.BIGINT;
@@ -69,9 +68,6 @@ import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.spi.type.VarcharType.createVarcharType;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.AMBIGUOUS_FUNCTION_CALL;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.FUNCTION_NOT_FOUND;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.TYPE_MISMATCH;
 import static io.prestosql.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static io.prestosql.type.JsonType.JSON;
 import static io.prestosql.type.UnknownType.UNKNOWN;
@@ -88,7 +84,6 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
 public class TestArrayOperators
@@ -572,9 +567,9 @@ public class TestArrayOperators
         assertFunction("ARRAY_JOIN(ARRAY [1.0, 2.100, NULL], 'x', 'N/A')", VARCHAR, "1.000x2.100xN/A");
         assertFunction("ARRAY_JOIN(ARRAY [1.0, DOUBLE '002.100', 3.3], 'x')", VARCHAR, "1.0x2.1x3.3");
 
-        assertInvalidFunction("ARRAY_JOIN(ARRAY [ARRAY [1], ARRAY [2]], '-')", INVALID_FUNCTION_ARGUMENT);
-        assertInvalidFunction("ARRAY_JOIN(ARRAY [MAP(ARRAY [1], ARRAY [2])], '-')", INVALID_FUNCTION_ARGUMENT);
-        assertInvalidFunction("ARRAY_JOIN(ARRAY [cast(row(1, 2) AS row(col0 bigint, col1 bigint))], '-')", INVALID_FUNCTION_ARGUMENT);
+        assertInvalidFunction("ARRAY_JOIN(ARRAY [ARRAY [1], ARRAY [2]], '-')", FUNCTION_NOT_FOUND);
+        assertInvalidFunction("ARRAY_JOIN(ARRAY [MAP(ARRAY [1], ARRAY [2])], '-')", FUNCTION_NOT_FOUND);
+        assertInvalidFunction("ARRAY_JOIN(ARRAY [cast(row(1, 2) AS row(col0 bigint, col1 bigint))], '-')", FUNCTION_NOT_FOUND);
     }
 
     @Test
@@ -689,22 +684,12 @@ public class TestArrayOperators
     @Test
     public void testSubscript()
     {
-        String outOfBounds = "Array subscript out of bounds";
-        String negativeIndex = "Array subscript is negative";
-        String indexIsZero = "SQL array indices start at 1";
-        assertInvalidFunction("ARRAY [][1]", outOfBounds);
-        assertInvalidFunction("ARRAY [null][-1]", negativeIndex);
-        assertInvalidFunction("ARRAY [1, 2, 3][0]", indexIsZero);
-        assertInvalidFunction("ARRAY [1, 2, 3][-1]", negativeIndex);
-        assertInvalidFunction("ARRAY [1, 2, 3][4]", outOfBounds);
-
-        try {
-            assertFunction("ARRAY [1, 2, 3][1.1E0]", BIGINT, null);
-            fail("Access to array with double subscript should fail");
-        }
-        catch (SemanticException e) {
-            assertTrue(e.getCode() == TYPE_MISMATCH);
-        }
+        assertInvalidFunction("ARRAY [][1]", INVALID_FUNCTION_ARGUMENT, "Array subscript must be less than or equal to array length: 1 > 0");
+        assertInvalidFunction("ARRAY [null][-1]", INVALID_FUNCTION_ARGUMENT, "Array subscript is negative: -1");
+        assertInvalidFunction("ARRAY [1, 2, 3][0]", INVALID_FUNCTION_ARGUMENT, "SQL array indices start at 1");
+        assertInvalidFunction("ARRAY [1, 2, 3][-1]", INVALID_FUNCTION_ARGUMENT, "Array subscript is negative: -1");
+        assertInvalidFunction("ARRAY [1, 2, 3][4]", INVALID_FUNCTION_ARGUMENT, "Array subscript must be less than or equal to array length: 4 > 3");
+        assertInvalidFunction("ARRAY [1, 2, 3][1.1E0]", TYPE_MISMATCH, "line 1:1: '[]' cannot be applied to array(integer), double");
 
         assertFunction("ARRAY[NULL][1]", UNKNOWN, null);
         assertFunction("ARRAY[NULL, NULL, NULL][3]", UNKNOWN, null);
@@ -997,6 +982,16 @@ public class TestArrayOperators
         assertFunction("ARRAY_DISTINCT(ARRAY [NULL, NULL])", new ArrayType(UNKNOWN), asList((Object) null));
         assertFunction("ARRAY_DISTINCT(ARRAY [NULL, NULL, NULL])", new ArrayType(UNKNOWN), asList((Object) null));
 
+        // Indeterminate values
+        assertFunction(
+                "ARRAY_DISTINCT(ARRAY[(123, 'abc'), (123, NULL)])",
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
+                ImmutableList.of(asList(123, "abc"), asList(123, null)));
+        assertFunction(
+                "ARRAY_DISTINCT(ARRAY[(NULL, NULL), (42, 'def'), (NULL, 'abc'), (123, NULL), (42, 'def'), (NULL, NULL), (NULL, 'abc'), (123, NULL)])",
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
+                ImmutableList.of(asList(null, null), asList(42, "def"), asList(null, "abc"), asList(123, null)));
+
         // Test for BIGINT-optimized implementation
         assertFunction("ARRAY_DISTINCT(ARRAY [CAST(5 AS BIGINT), NULL, CAST(12 AS BIGINT), NULL])", new ArrayType(BIGINT), asList(5L, null, 12L));
         assertFunction("ARRAY_DISTINCT(ARRAY [CAST(100 AS BIGINT), NULL, CAST(100 AS BIGINT), NULL, 0, -2, 0])", new ArrayType(BIGINT), asList(100L, null, 0L, -2L));
@@ -1192,13 +1187,25 @@ public class TestArrayOperators
                 new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
                 ImmutableList.of());
 
-        // test unsupported
-        assertNotSupported(
+        // Indeterminate values
+        assertFunction(
                 "ARRAY_INTERSECT(ARRAY[(123, 'abc'), (123, NULL)], ARRAY[(123, 'abc'), (123, NULL)])",
-                "ROW comparison not supported for fields with null elements");
-        assertNotSupported(
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
+                ImmutableList.of(asList(123, "abc"), asList(123, null)));
+        assertFunction(
                 "ARRAY_INTERSECT(ARRAY[(NULL, 'abc'), (123, 'abc')], ARRAY[(123, 'abc'),(NULL, 'abc')])",
-                "ROW comparison not supported for fields with null elements");
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
+                ImmutableList.of(asList(null, "abc"), asList(123, "abc")));
+        assertFunction(
+                "ARRAY_INTERSECT(" +
+                        "ARRAY[(NULL, 'abc'), (123, 'abc'), (NULL, 'def'), (NULL, 'abc')], " +
+                        "ARRAY[(123, 'abc'), (NULL, 'abc'), (123, 'def'), (123, 'abc'), (123, 'abc'), (123, 'abc'), (123, 'abc'), (NULL, 'abc'), (NULL, 'abc'), (NULL, 'abc')])",
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, createVarcharType(3)))),
+                ImmutableList.of(asList(123, "abc"), asList(null, "abc")));
+        assertFunction(
+                "ARRAY_INTERSECT(ARRAY[(123, 456), (123, NULL), (42, 43)], ARRAY[(123, NULL), (123, 456), (42, NULL), (NULL, 43)])",
+                new ArrayType(RowType.anonymous(ImmutableList.of(INTEGER, INTEGER))),
+                ImmutableList.of(asList(123, null), asList(123, 456)));
 
         assertCachedInstanceHasBoundedRetainedSize("ARRAY_INTERSECT(ARRAY ['foo', 'bar', 'baz'], ARRAY ['foo', 'test', 'bar'])");
     }
@@ -1794,18 +1801,6 @@ public class TestArrayOperators
                 "result of sequence function must not have more than 10000 entries");
     }
 
-    @Override
-    public void assertInvalidFunction(String projection, SemanticErrorCode errorCode)
-    {
-        try {
-            assertFunction(projection, UNKNOWN, null);
-            fail("Expected error " + errorCode + " from " + projection);
-        }
-        catch (SemanticException e) {
-            assertEquals(e.getCode(), errorCode);
-        }
-    }
-
     @Test
     public void testFlatten()
     {
@@ -1858,17 +1853,6 @@ public class TestArrayOperators
         // test with ARRAY[ MAP( ARRAY[1], ARRAY[2] ) ]
         MapType mapType = mapType(INTEGER, INTEGER);
         assertArrayHashOperator("ARRAY[MAP(ARRAY[1], ARRAY[2])]", mapType, ImmutableList.of(mapBlockOf(INTEGER, INTEGER, ImmutableMap.of(1L, 2L))));
-    }
-
-    public void assertInvalidFunction(String projection, ErrorCode errorCode)
-    {
-        try {
-            assertFunction(projection, UNKNOWN, null);
-            fail("Expected error " + errorCode + " from " + projection);
-        }
-        catch (PrestoException e) {
-            assertEquals(e.getErrorCode(), errorCode);
-        }
     }
 
     private void assertArrayHashOperator(String inputArray, Type elementType, List<Object> elements)

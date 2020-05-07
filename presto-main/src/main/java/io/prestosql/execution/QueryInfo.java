@@ -18,15 +18,17 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.prestosql.Session;
 import io.prestosql.SessionRepresentation;
 import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.ErrorType;
 import io.prestosql.spi.PrestoWarning;
 import io.prestosql.spi.QueryId;
+import io.prestosql.spi.eventlistener.RoutineInfo;
+import io.prestosql.spi.eventlistener.TableInfo;
 import io.prestosql.spi.memory.MemoryPoolId;
 import io.prestosql.spi.resourcegroups.ResourceGroupId;
 import io.prestosql.spi.security.SelectedRole;
+import io.prestosql.sql.analyzer.Output;
 import io.prestosql.transaction.TransactionId;
 
 import javax.annotation.Nullable;
@@ -39,11 +41,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
-import static io.prestosql.execution.QueryState.FAILED;
-import static io.prestosql.execution.QueryStats.immediateFailureQueryStats;
 import static io.prestosql.execution.StageInfo.getAllStages;
-import static io.prestosql.memory.LocalMemoryManager.GENERAL_POOL;
-import static io.prestosql.util.Failures.toFailure;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
@@ -57,6 +55,7 @@ public class QueryInfo
     private final URI self;
     private final List<String> fieldNames;
     private final String query;
+    private final Optional<String> preparedQuery;
     private final QueryStats queryStats;
     private final Optional<String> setCatalog;
     private final Optional<String> setSchema;
@@ -70,6 +69,8 @@ public class QueryInfo
     private final boolean clearTransactionId;
     private final String updateType;
     private final Optional<StageInfo> outputStage;
+    private final List<TableInfo> referencedTables;
+    private final List<RoutineInfo> routines;
     private final ExecutionFailureInfo failureInfo;
     private final ErrorType errorType;
     private final ErrorCode errorCode;
@@ -89,6 +90,7 @@ public class QueryInfo
             @JsonProperty("self") URI self,
             @JsonProperty("fieldNames") List<String> fieldNames,
             @JsonProperty("query") String query,
+            @JsonProperty("preparedQuery") Optional<String> preparedQuery,
             @JsonProperty("queryStats") QueryStats queryStats,
             @JsonProperty("setCatalog") Optional<String> setCatalog,
             @JsonProperty("setSchema") Optional<String> setSchema,
@@ -107,6 +109,8 @@ public class QueryInfo
             @JsonProperty("warnings") List<PrestoWarning> warnings,
             @JsonProperty("inputs") Set<Input> inputs,
             @JsonProperty("output") Optional<Output> output,
+            @JsonProperty("referencedTables") List<TableInfo> referencedTables,
+            @JsonProperty("routines") List<RoutineInfo> routines,
             @JsonProperty("completeInfo") boolean completeInfo,
             @JsonProperty("resourceGroupId") Optional<ResourceGroupId> resourceGroupId)
     {
@@ -125,9 +129,12 @@ public class QueryInfo
         requireNonNull(deallocatedPreparedStatements, "deallocatedPreparedStatements is null");
         requireNonNull(startedTransactionId, "startedTransactionId is null");
         requireNonNull(query, "query is null");
+        requireNonNull(preparedQuery, "preparedQuery is null");
         requireNonNull(outputStage, "outputStage is null");
         requireNonNull(inputs, "inputs is null");
         requireNonNull(output, "output is null");
+        requireNonNull(referencedTables, "referencedTables is null");
+        requireNonNull(routines, "routines is null");
         requireNonNull(resourceGroupId, "resourceGroupId is null");
         requireNonNull(warnings, "warnings is null");
 
@@ -139,6 +146,7 @@ public class QueryInfo
         this.self = self;
         this.fieldNames = ImmutableList.copyOf(fieldNames);
         this.query = query;
+        this.preparedQuery = preparedQuery;
         this.queryStats = queryStats;
         this.setCatalog = setCatalog;
         this.setSchema = setSchema;
@@ -158,44 +166,10 @@ public class QueryInfo
         this.warnings = ImmutableList.copyOf(warnings);
         this.inputs = ImmutableSet.copyOf(inputs);
         this.output = output;
+        this.referencedTables = ImmutableList.copyOf(referencedTables);
+        this.routines = ImmutableList.copyOf(routines);
         this.completeInfo = completeInfo;
         this.resourceGroupId = resourceGroupId;
-    }
-
-    public static QueryInfo immediateFailureQueryInfo(Session session, String query, URI self, Optional<ResourceGroupId> resourceGroupId, Throwable throwable)
-    {
-        ExecutionFailureInfo failureCause = toFailure(throwable);
-        QueryInfo queryInfo = new QueryInfo(
-                session.getQueryId(),
-                session.toSessionRepresentation(),
-                FAILED,
-                GENERAL_POOL,
-                false,
-                self,
-                ImmutableList.of(),
-                query,
-                immediateFailureQueryStats(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                ImmutableMap.of(),
-                ImmutableSet.of(),
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableSet.of(),
-                Optional.empty(),
-                false,
-                null,
-                Optional.empty(),
-                failureCause,
-                failureCause.getErrorCode(),
-                ImmutableList.of(),
-                ImmutableSet.of(),
-                Optional.empty(),
-                true,
-                resourceGroupId);
-
-        return queryInfo;
     }
 
     @JsonProperty
@@ -244,6 +218,12 @@ public class QueryInfo
     public String getQuery()
     {
         return query;
+    }
+
+    @JsonProperty
+    public Optional<String> getPreparedQuery()
+    {
+        return preparedQuery;
     }
 
     @JsonProperty
@@ -368,6 +348,18 @@ public class QueryInfo
     public Optional<Output> getOutput()
     {
         return output;
+    }
+
+    @JsonProperty
+    public List<TableInfo> getReferencedTables()
+    {
+        return referencedTables;
+    }
+
+    @JsonProperty
+    public List<RoutineInfo> getRoutines()
+    {
+        return routines;
     }
 
     @JsonProperty

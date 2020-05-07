@@ -24,7 +24,6 @@ import io.prestosql.metadata.Catalog;
 import io.prestosql.metadata.SessionPropertyManager;
 import io.prestosql.spi.connector.Connector;
 import io.prestosql.spi.connector.ConnectorMetadata;
-import io.prestosql.spi.connector.ConnectorSplitManager;
 import io.prestosql.spi.connector.ConnectorTransactionHandle;
 import io.prestosql.spi.security.Identity;
 import io.prestosql.spi.transaction.IsolationLevel;
@@ -33,8 +32,8 @@ import io.prestosql.sql.SqlPath;
 
 import java.util.Optional;
 
-import static io.prestosql.connector.CatalogName.createInformationSchemaConnectorId;
-import static io.prestosql.connector.CatalogName.createSystemTablesConnectorId;
+import static io.prestosql.connector.CatalogName.createInformationSchemaCatalogName;
+import static io.prestosql.connector.CatalogName.createSystemTablesCatalogName;
 import static java.util.Locale.ENGLISH;
 
 public final class TestingSession
@@ -62,7 +61,7 @@ public final class TestingSession
     {
         return Session.builder(sessionPropertyManager)
                 .setQueryId(queryIdGenerator.createNextQueryId())
-                .setIdentity(new Identity("user", Optional.empty()))
+                .setIdentity(Identity.ofUser("user"))
                 .setSource("test")
                 .setCatalog("catalog")
                 .setSchema("schema")
@@ -75,14 +74,14 @@ public final class TestingSession
 
     public static Catalog createBogusTestingCatalog(String catalogName)
     {
-        CatalogName connectorId = new CatalogName(catalogName);
+        CatalogName catalog = new CatalogName(catalogName);
         return new Catalog(
                 catalogName,
-                connectorId,
+                catalog,
                 createTestSessionConnector(),
-                createInformationSchemaConnectorId(connectorId),
+                createInformationSchemaCatalogName(catalog),
                 createTestSessionConnector(),
-                createSystemTablesConnectorId(connectorId),
+                createSystemTablesCatalogName(catalog),
                 createTestSessionConnector());
     }
 
@@ -99,13 +98,7 @@ public final class TestingSession
             @Override
             public ConnectorMetadata getMetadata(ConnectorTransactionHandle transaction)
             {
-                return new SystemTablesMetadata(new CatalogName("test_session_connector"), new StaticSystemTablesProvider(ImmutableSet.of()));
-            }
-
-            @Override
-            public ConnectorSplitManager getSplitManager()
-            {
-                throw new UnsupportedOperationException();
+                return new SystemTablesMetadata(new StaticSystemTablesProvider(ImmutableSet.of()));
             }
         };
     }

@@ -15,15 +15,10 @@ package io.prestosql.plugin.accumulo.serializers;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.prestosql.block.BlockEncodingManager;
-import io.prestosql.metadata.FunctionRegistry;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.TypeSignatureParameter;
-import io.prestosql.sql.analyzer.FeaturesConfig;
-import io.prestosql.type.TypeRegistry;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Value;
@@ -39,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.DateType.DATE;
@@ -188,14 +184,10 @@ public abstract class AbstractTestAccumuloRowSerializer
     public void testMap()
             throws Exception
     {
-        TypeManager typeManager = new TypeRegistry();
-        // associate typeManager with a function registry
-        new FunctionRegistry(typeManager, new BlockEncodingManager(typeManager), new FeaturesConfig());
-
         AccumuloRowSerializer serializer = serializerClass.getConstructor().newInstance();
-        Type type = typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(VARCHAR.getTypeSignature()),
-                TypeSignatureParameter.of(BIGINT.getTypeSignature())));
+        Type type = createTestMetadataManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(VARCHAR.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(BIGINT.getTypeSignature())));
         Map<Object, Object> expected = ImmutableMap.of("a", 1L, "b", 2L, "3", 3L);
         byte[] data = serializer.encode(type, AccumuloRowSerializer.getBlockFromMap(type, expected));
         Map<Object, Object> actual = serializer.decode(type, data);

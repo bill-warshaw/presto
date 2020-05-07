@@ -14,18 +14,19 @@
 package io.prestosql.operator.scalar;
 
 import com.google.common.collect.ImmutableList;
-import io.prestosql.metadata.MetadataManager;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.DriverYieldSignal;
 import io.prestosql.operator.project.PageProcessor;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.connector.ConnectorSession;
-import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.gen.ExpressionCompiler;
 import io.prestosql.sql.gen.PageFunctionCompiler;
 import io.prestosql.sql.relational.RowExpression;
+import io.prestosql.sql.relational.SpecialForm;
+import io.prestosql.sql.relational.SpecialForm.Form;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -54,8 +55,8 @@ import static com.google.common.collect.Iterables.cycle;
 import static com.google.common.collect.Iterables.limit;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
-import static io.prestosql.metadata.Signature.internalOperator;
-import static io.prestosql.metadata.Signature.internalScalarFunction;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
+import static io.prestosql.spi.function.OperatorType.EQUAL;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.sql.relational.Expressions.call;
@@ -76,12 +77,13 @@ public class BenchmarkEqualsOperator
     private static final DriverYieldSignal SIGNAL = new DriverYieldSignal();
     private static final ConnectorSession SESSION = TEST_SESSION.toConnectorSession();
 
+    private Metadata metadata;
     private PageProcessor compiledProcessor;
 
     @Setup
     public void setup()
     {
-        MetadataManager metadata = MetadataManager.createTestMetadataManager();
+        metadata = createTestMetadataManager();
         ExpressionCompiler expressionCompiler = new ExpressionCompiler(
                 metadata,
                 new PageFunctionCompiler(metadata, 0));
@@ -89,7 +91,7 @@ public class BenchmarkEqualsOperator
         compiledProcessor = expressionCompiler.compilePageProcessor(Optional.empty(), ImmutableList.of(projection)).get();
     }
 
-    private static RowExpression generateComplexComparisonProjection(int fieldsCount, int comparisonsCount)
+    private RowExpression generateComplexComparisonProjection(int fieldsCount, int comparisonsCount)
     {
         checkArgument(fieldsCount > 0, "fieldsCount must be greater than zero");
         checkArgument(comparisonsCount > 0, "comparisonsCount must be greater than zero");
@@ -105,17 +107,13 @@ public class BenchmarkEqualsOperator
 
     private static RowExpression createConjunction(RowExpression left, RowExpression right)
     {
-        return call(
-                internalScalarFunction("OR", BOOLEAN.getTypeSignature(), BOOLEAN.getTypeSignature(), BOOLEAN.getTypeSignature()),
-                BOOLEAN,
-                left,
-                right);
+        return new SpecialForm(Form.OR, BOOLEAN, left, right);
     }
 
-    private static RowExpression createComparison(int leftField, int rightField)
+    private RowExpression createComparison(int leftField, int rightField)
     {
         return call(
-                internalOperator(OperatorType.EQUAL, BOOLEAN.getTypeSignature(), BIGINT.getTypeSignature(), BIGINT.getTypeSignature()),
+                metadata.resolveOperator(EQUAL, ImmutableList.of(BIGINT, BIGINT)),
                 BOOLEAN,
                 field(leftField, BIGINT),
                 field(rightField, BIGINT));

@@ -17,11 +17,18 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.connector.ConnectorSession;
+import io.prestosql.spi.type.DoubleType;
+import io.prestosql.spi.type.RealType;
 import io.prestosql.spi.type.Type;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.StringJoiner;
 
+import static io.prestosql.spi.predicate.Utils.blockToNativeValue;
+import static io.prestosql.spi.predicate.Utils.nativeValueToBlock;
+import static java.lang.Float.intBitsToFloat;
+import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -61,10 +68,16 @@ public final class Marker
             throw new IllegalArgumentException("type must be orderable");
         }
         if (!valueBlock.isPresent() && bound == Bound.EXACTLY) {
-            throw new IllegalArgumentException("Can not be equal to unbounded");
+            throw new IllegalArgumentException("Cannot be equal to unbounded");
         }
         if (valueBlock.isPresent() && valueBlock.get().getPositionCount() != 1) {
             throw new IllegalArgumentException("value block should only have one position");
+        }
+        if (type instanceof RealType && valueBlock.isPresent() && Float.isNaN(intBitsToFloat(toIntExact((long) blockToNativeValue(type, valueBlock.get()))))) {
+            throw new IllegalArgumentException("cannot use Real NaN as range bound");
+        }
+        if (type instanceof DoubleType && valueBlock.isPresent() && Double.isNaN((double) blockToNativeValue(type, valueBlock.get()))) {
+            throw new IllegalArgumentException("cannot use Double NaN as range bound");
         }
         this.type = type;
         this.valueBlock = valueBlock;
@@ -73,7 +86,7 @@ public final class Marker
 
     private static Marker create(Type type, Optional<Object> value, Bound bound)
     {
-        return new Marker(type, value.map(object -> Utils.nativeValueToBlock(type, object)), bound);
+        return new Marker(type, value.map(object -> nativeValueToBlock(type, object)), bound);
     }
 
     public static Marker upperUnbounded(Type type)
@@ -126,7 +139,7 @@ public final class Marker
         if (!valueBlock.isPresent()) {
             throw new IllegalStateException("No value to get");
         }
-        return Utils.blockToNativeValue(type, valueBlock.get());
+        return blockToNativeValue(type, valueBlock.get());
     }
 
     public Object getPrintableValue(ConnectorSession session)
@@ -277,9 +290,24 @@ public final class Marker
         }
         Marker other = (Marker) obj;
         return Objects.equals(this.type, other.type)
-                && Objects.equals(this.bound, other.bound)
+                && this.bound == other.bound
                 && ((this.valueBlock.isPresent()) == (other.valueBlock.isPresent()))
                 && (!this.valueBlock.isPresent() || type.equalTo(this.valueBlock.get(), 0, other.valueBlock.get(), 0));
+    }
+
+    @Override
+    public String toString()
+    {
+        StringJoiner stringJoiner = new StringJoiner(", ", Marker.class.getSimpleName() + "[", "]");
+        if (isLowerUnbounded()) {
+            stringJoiner.add("lower unbounded");
+        }
+        else if (isUpperUnbounded()) {
+            stringJoiner.add("upper unbounded");
+        }
+        stringJoiner.add("bound=" + bound);
+        valueBlock.ifPresent(valueBlock -> stringJoiner.add("valueBlock=..."));
+        return stringJoiner.toString();
     }
 
     public String toString(ConnectorSession session)

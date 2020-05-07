@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
+import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -24,21 +25,24 @@ import static java.util.Objects.requireNonNull;
 public final class JdbcTypeHandle
 {
     private final int jdbcType;
-    private final String jdbcTypeName;
+    private final Optional<String> jdbcTypeName;
     private final int columnSize;
     private final int decimalDigits;
+    private final Optional<Integer> arrayDimensions;
 
     @JsonCreator
     public JdbcTypeHandle(
             @JsonProperty("jdbcType") int jdbcType,
-            @JsonProperty("jdbcTypeName") String jdbcTypeName,
+            @JsonProperty("jdbcTypeName") Optional<String> jdbcTypeName,
             @JsonProperty("columnSize") int columnSize,
-            @JsonProperty("decimalDigits") int decimalDigits)
+            @JsonProperty("decimalDigits") int decimalDigits,
+            @JsonProperty("arrayDimensions") Optional<Integer> arrayDimensions)
     {
         this.jdbcType = jdbcType;
         this.jdbcTypeName = requireNonNull(jdbcTypeName, "jdbcTypeName is null");
         this.columnSize = columnSize;
         this.decimalDigits = decimalDigits;
+        this.arrayDimensions = requireNonNull(arrayDimensions, "arrayDimensions is null");
     }
 
     @JsonProperty
@@ -48,7 +52,7 @@ public final class JdbcTypeHandle
     }
 
     @JsonProperty
-    public String getJdbcTypeName()
+    public Optional<String> getJdbcTypeName()
     {
         return jdbcTypeName;
     }
@@ -65,10 +69,16 @@ public final class JdbcTypeHandle
         return decimalDigits;
     }
 
+    @JsonProperty
+    public Optional<Integer> getArrayDimensions()
+    {
+        return arrayDimensions;
+    }
+
     @Override
     public int hashCode()
     {
-        return Objects.hash(jdbcType, jdbcTypeName, columnSize, decimalDigits);
+        return Objects.hash(jdbcType, jdbcTypeName, columnSize, decimalDigits, arrayDimensions);
     }
 
     @Override
@@ -84,17 +94,20 @@ public final class JdbcTypeHandle
         return jdbcType == that.jdbcType &&
                 columnSize == that.columnSize &&
                 decimalDigits == that.decimalDigits &&
-                Objects.equals(jdbcTypeName, that.jdbcTypeName);
+                Objects.equals(jdbcTypeName, that.jdbcTypeName) &&
+                Objects.equals(arrayDimensions, that.arrayDimensions);
     }
 
     @Override
     public String toString()
     {
         return toStringHelper(this)
+                .omitNullValues()
                 .add("jdbcType", jdbcType)
-                .add("jdbcTypeName", jdbcTypeName)
+                .add("jdbcTypeName", jdbcTypeName.orElse(null))
                 .add("columnSize", columnSize)
                 .add("decimalDigits", decimalDigits)
+                .add("arrayDimensions", arrayDimensions.orElse(null))
                 .toString();
     }
 }

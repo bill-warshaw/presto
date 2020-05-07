@@ -20,6 +20,8 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimaps;
 import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.prestosql.plugin.raptor.legacy.metadata.ColumnInfo;
@@ -43,13 +45,13 @@ import io.prestosql.spi.connector.ConnectorOutputTableHandle;
 import io.prestosql.spi.connector.ConnectorPartitioningHandle;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorTableHandle;
-import io.prestosql.spi.connector.ConnectorTableLayout;
 import io.prestosql.spi.connector.ConnectorTableLayoutHandle;
-import io.prestosql.spi.connector.ConnectorTableLayoutResult;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.ConnectorTablePartitioning;
+import io.prestosql.spi.connector.ConnectorTableProperties;
 import io.prestosql.spi.connector.ConnectorViewDefinition;
 import io.prestosql.spi.connector.Constraint;
+import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.SystemTable;
@@ -77,6 +79,7 @@ import java.util.function.LongConsumer;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.MoreCollectors.toOptional;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.prestosql.plugin.raptor.legacy.RaptorBucketFunction.validateBucketType;
 import static io.prestosql.plugin.raptor.legacy.RaptorColumnHandle.BUCKET_NUMBER_COLUMN_NAME;
@@ -128,6 +131,9 @@ public class RaptorMetadata
     private static final JsonCodec<ShardInfo> SHARD_INFO_CODEC = jsonCodec(ShardInfo.class);
     private static final JsonCodec<ShardDelta> SHARD_DELTA_CODEC = jsonCodec(ShardDelta.class);
 
+    private static final JsonCodec<ConnectorViewDefinition> VIEW_CODEC =
+            new JsonCodecFactory(new ObjectMapperProvider()).jsonCodec(ConnectorViewDefinition.class);
+
     private final IDBI dbi;
     private final MetadataDao dao;
     private final ShardManager shardManager;
@@ -168,7 +174,7 @@ public class RaptorMetadata
             return null;
         }
         List<TableColumn> tableColumns = dao.listTableColumns(table.getTableId());
-        checkArgument(!tableColumns.isEmpty(), "Table %s does not have any columns", tableName);
+        checkArgument(!tableColumns.isEmpty(), "Table '%s' does not have any columns", tableName);
 
         return new RaptorTableHandle(
                 tableName.getSchemaName(),
@@ -179,6 +185,8 @@ public class RaptorMetadata
                 table.getBucketCount(),
                 table.isOrganized(),
                 OptionalLong.empty(),
+                TupleDomain.all(),
+                table.getDistributionId().map(shardManager::getBucketAssignments),
                 false);
     }
 
@@ -291,35 +299,52 @@ public class RaptorMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
+    public boolean usesLegacyTableLayouts()
     {
-        RaptorTableHandle handle = (RaptorTableHandle) table;
-        ConnectorTableLayout layout = getTableLayout(session, handle, constraint.getSummary());
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return false;
     }
 
     @Override
-    public ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle)
+    public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorSession session, ConnectorTableHandle handle, Constraint constraint)
     {
-        RaptorTableLayoutHandle raptorHandle = (RaptorTableLayoutHandle) handle;
-        return getTableLayout(session, raptorHandle.getTable(), raptorHandle.getConstraint());
-    }
+        RaptorTableHandle table = (RaptorTableHandle) handle;
+        TupleDomain<RaptorColumnHandle> newDomain = constraint.getSummary().transform(RaptorColumnHandle.class::cast);
 
-    private ConnectorTableLayout getTableLayout(ConnectorSession session, RaptorTableHandle handle, TupleDomain<ColumnHandle> constraint)
-    {
-        if (!handle.getDistributionId().isPresent()) {
-            return new ConnectorTableLayout(new RaptorTableLayoutHandle(handle, constraint, Optional.empty()));
+        if (newDomain.equals(table.getConstraint())) {
+            return Optional.empty();
         }
 
-        List<RaptorColumnHandle> bucketColumnHandles = getBucketColumnHandles(handle.getTableId());
+        return Optional.of(new ConstraintApplicationResult<>(
+                new RaptorTableHandle(table.getSchemaName(),
+                        table.getTableName(),
+                        table.getTableId(),
+                        table.getDistributionId(),
+                        table.getDistributionName(),
+                        table.getBucketCount(),
+                        table.isOrganized(),
+                        table.getTransactionId(),
+                        newDomain.intersect(table.getConstraint()),
+                        table.getBucketAssignments(),
+                        table.isDelete()),
+                constraint.getSummary()));
+    }
 
-        RaptorPartitioningHandle partitioning = getPartitioningHandle(handle.getDistributionId().getAsLong());
+    @Override
+    public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle handle)
+    {
+        RaptorTableHandle table = (RaptorTableHandle) handle;
 
-        boolean oneSplitPerBucket = handle.getBucketCount().getAsInt() >= getOneSplitPerBucketThreshold(session);
+        if (!table.getPartitioningHandle().isPresent()) {
+            return new ConnectorTableProperties();
+        }
 
-        return new ConnectorTableLayout(
-                new RaptorTableLayoutHandle(handle, constraint, Optional.of(partitioning)),
-                Optional.empty(),
+        List<RaptorColumnHandle> bucketColumnHandles = getBucketColumnHandles(table.getTableId());
+
+        RaptorPartitioningHandle partitioning = table.getPartitioningHandle().get();
+
+        boolean oneSplitPerBucket = table.getBucketCount().getAsInt() >= getOneSplitPerBucketThreshold(session);
+
+        return new ConnectorTableProperties(
                 TupleDomain.all(),
                 Optional.of(new ConnectorTablePartitioning(
                         partitioning,
@@ -458,7 +483,7 @@ public class RaptorMetadata
         long columnId = lastColumn.getColumnId() + 1;
         int ordinalPosition = lastColumn.getOrdinalPosition() + 1;
 
-        String type = column.getType().getTypeSignature().toString();
+        String type = column.getType().getTypeId().getId();
         daoTransaction(dbi, MetadataDao.class, dao -> {
             dao.insertColumn(table.getTableId(), columnId, column.getName(), ordinalPosition, type, null, null);
             dao.updateTableVersion(table.getTableId(), session.getStartTime());
@@ -524,6 +549,7 @@ public class RaptorMetadata
 
         Optional<RaptorPartitioningHandle> partitioning = layout
                 .map(ConnectorNewTableLayout::getPartitioning)
+                .map(Optional::get)
                 .map(RaptorPartitioningHandle.class::cast);
 
         ImmutableList.Builder<RaptorColumnHandle> columnHandles = ImmutableList.builder();
@@ -647,7 +673,7 @@ public class RaptorMetadata
                 RaptorColumnHandle column = table.getColumnHandles().get(i);
 
                 int columnId = i + 1;
-                String type = table.getColumnTypes().get(i).getTypeSignature().toString();
+                String type = table.getColumnTypes().get(i).getTypeId().getId();
                 Integer sortPosition = sortColumnHandles.contains(column) ? sortColumnHandles.indexOf(column) : null;
                 Integer bucketPosition = bucketColumnHandles.contains(column) ? bucketColumnHandles.indexOf(column) : null;
 
@@ -774,6 +800,8 @@ public class RaptorMetadata
                 handle.getBucketCount(),
                 handle.isOrganized(),
                 OptionalLong.of(transactionId),
+                TupleDomain.all(),
+                handle.getBucketAssignments(),
                 true);
     }
 
@@ -815,10 +843,11 @@ public class RaptorMetadata
     }
 
     @Override
-    public void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    public void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, boolean replace)
     {
         String schemaName = viewName.getSchemaName();
         String tableName = viewName.getTableName();
+        String viewData = VIEW_CODEC.toJson(definition);
 
         if (getTableHandle(viewName) != null) {
             throw new PrestoException(ALREADY_EXISTS, "Table already exists: " + viewName);
@@ -859,18 +888,26 @@ public class RaptorMetadata
     }
 
     @Override
-    public Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, SchemaTablePrefix prefix)
+    public Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, Optional<String> schemaName)
     {
         ImmutableMap.Builder<SchemaTableName, ConnectorViewDefinition> map = ImmutableMap.builder();
-        for (ViewResult view : dao.getViews(prefix.getSchema().orElse(null), prefix.getTable().orElse(null))) {
-            map.put(view.getName(), new ConnectorViewDefinition(view.getName(), Optional.empty(), view.getData()));
+        for (ViewResult view : dao.getViews(schemaName.orElse(null), null)) {
+            map.put(view.getName(), VIEW_CODEC.fromJson(view.getData()));
         }
         return map.build();
     }
 
+    @Override
+    public Optional<ConnectorViewDefinition> getView(ConnectorSession session, SchemaTableName viewName)
+    {
+        return dao.getViews(viewName.getSchemaName(), viewName.getTableName()).stream()
+                .map(view -> VIEW_CODEC.fromJson(view.getData()))
+                .collect(toOptional());
+    }
+
     private boolean viewExists(ConnectorSession session, SchemaTableName viewName)
     {
-        return !getViews(session, viewName.toSchemaTablePrefix()).isEmpty();
+        return getView(session, viewName).isPresent();
     }
 
     private RaptorColumnHandle getRaptorColumnHandle(TableColumn tableColumn)
@@ -887,7 +924,11 @@ public class RaptorMetadata
 
     private static ColumnMetadata hiddenColumn(String name, Type type)
     {
-        return new ColumnMetadata(name, type, null, true);
+        return ColumnMetadata.builder()
+                .setName(name)
+                .setType(type)
+                .setHidden(true)
+                .build();
     }
 
     private void setTransactionId(long transactionId)

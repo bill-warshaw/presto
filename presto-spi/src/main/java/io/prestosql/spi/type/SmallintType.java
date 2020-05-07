@@ -21,8 +21,9 @@ import io.prestosql.spi.block.PageBuilderStatus;
 import io.prestosql.spi.block.ShortArrayBlockBuilder;
 import io.prestosql.spi.connector.ConnectorSession;
 
+import java.util.Optional;
+
 import static io.prestosql.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static java.lang.Long.rotateLeft;
 import static java.lang.String.format;
 
@@ -34,7 +35,7 @@ public final class SmallintType
 
     private SmallintType()
     {
-        super(parseTypeSignature(StandardTypes.SMALLINT), long.class);
+        super(new TypeSignature(StandardTypes.SMALLINT), long.class);
     }
 
     @Override
@@ -114,6 +115,12 @@ public final class SmallintType
         short leftValue = leftBlock.getShort(leftPosition, 0);
         short rightValue = rightBlock.getShort(rightPosition, 0);
         return Short.compare(leftValue, rightValue);
+    }
+
+    @Override
+    public Optional<Range> getRange()
+    {
+        return Optional.of(new Range((long) Short.MIN_VALUE, (long) Short.MAX_VALUE));
     }
 
     @Override
